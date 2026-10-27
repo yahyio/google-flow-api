@@ -65,6 +65,18 @@ class FlowBrowserSession:
             if not os.path.isabs(session_file):
                 session_file = os.path.abspath(session_file)
 
+            if not os.path.exists(session_file):
+                session_base64 = os.getenv("SESSION_BASE64")
+                session_raw = os.getenv("SESSION_JSON")
+                if session_base64:
+                    os.makedirs(os.path.dirname(session_file), exist_ok=True)
+                    with open(session_file, "wb") as f:
+                        f.write(base64.b64decode(session_base64))
+                elif session_raw:
+                    os.makedirs(os.path.dirname(session_file), exist_ok=True)
+                    with open(session_file, "w", encoding="utf-8") as f:
+                        f.write(session_raw)
+
             exec_path = CHROME_EXE if (sys.platform == "win32" and os.path.exists(CHROME_EXE)) else None
 
             if os.path.exists(session_file):
