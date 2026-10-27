@@ -171,8 +171,8 @@ class FlowBrowserSession:
                 await asyncio.sleep(2)
 
                 cur_url = self.page.url
-                if "accounts.google.com" in cur_url:
-                    raise RuntimeError(f"Google oturumu gecersiz veya suresi dolmus. accounts.google.com adresine yonlendirildi: {cur_url}")
+                if "accounts.google.com" in cur_url or "/about" in cur_url:
+                    raise RuntimeError(f"Google oturumunuzun suresi dolmus veya cikis yapilmis (URL: {cur_url}). Lutfen 'login.bat' veya 'python save_session.py' calistirarak yeniden giris yapin.")
 
                 for btn_text in ["Anladım", "Got it", "Kabul ediyorum", "Accept all", "Tümünü kabul et", "Devam et", "Continue"]:
                     dismiss_btn = await self.page.query_selector(f'button:has-text("{btn_text}")')
