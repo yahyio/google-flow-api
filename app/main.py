@@ -1,3 +1,4 @@
+import os
 import sys
 import asyncio
 
@@ -24,8 +25,9 @@ from app.flow_browser import FlowBrowserSession
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    yield
     session = FlowBrowserSession.get_instance()
+    asyncio.create_task(session.warmup())
+    yield
     await session.close()
 
 app = FastAPI(
@@ -50,11 +52,56 @@ async def root():
 @app.get("/health")
 async def health_check():
     session = FlowBrowserSession.get_instance()
+    session_file = settings.SESSION_STORAGE_PATH
+    if not os.path.isabs(session_file):
+        session_file = os.path.abspath(session_file)
+    session_exists = os.path.exists(session_file) and os.path.getsize(session_file) > 0
+    session_env = bool(os.getenv("SESSION_JSON") or os.getenv("SESSION_BASE64"))
+    
+    current_url = None
+    if session.page and not session.page.is_closed():
+        try:
+            current_url = session.page.url
+        except Exception:
+            pass
+
     return {
         "status": "healthy",
         "app": settings.APP_NAME,
-        "browser_ready": session._is_initialized
+        "browser_ready": session._is_initialized,
+        "session_configured": session_exists or session_env,
+        "session_file_exists": session_exists,
+        "session_env_present": session_env,
+        "current_url": current_url,
+        "last_error": session.last_error
     }
+
+@app.get("/api/v1/init")
+@app.post("/api/v1/init")
+async def initialize_browser():
+    session = FlowBrowserSession.get_instance()
+    try:
+        await session.initialize()
+        title = await session.page.title() if session.page else ""
+        return {
+            "success": True,
+            "browser_ready": session._is_initialized,
+            "current_url": session.page.url if session.page else None,
+            "page_title": title
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/debug/screenshot")
+async def debug_screenshot():
+    session = FlowBrowserSession.get_instance()
+    if not session.page or session.page.is_closed():
+        raise HTTPException(status_code=400, detail="Tarayici acik degil. Once /api/v1/init cagirin.")
+    try:
+        screenshot_bytes = await session.page.screenshot(full_page=False)
+        return Response(content=screenshot_bytes, media_type="image/png")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/models", response_model=List[ModelInfo])
 async def list_models():

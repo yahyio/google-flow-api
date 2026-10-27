@@ -3,6 +3,7 @@ import sys
 import asyncio
 import base64
 import time
+import json
 import tempfile
 from typing import Optional, Dict, Any
 import requests
@@ -26,12 +27,54 @@ class FlowBrowserSession:
         self.page: Optional[Page] = None
         self.lock = asyncio.Lock()
         self._is_initialized = False
+        self.last_error: Optional[str] = None
 
     @classmethod
     def get_instance(cls) -> "FlowBrowserSession":
         if cls._instance is None:
             cls._instance = FlowBrowserSession()
         return cls._instance
+
+    async def _cleanup(self):
+        try:
+            if self.page and not self.page.is_closed():
+                await self.page.close()
+        except Exception:
+            pass
+        self.page = None
+
+        try:
+            if self.context:
+                await self.context.close()
+        except Exception:
+            pass
+        self.context = None
+
+        try:
+            if self.browser:
+                await self.browser.close()
+        except Exception:
+            pass
+        self.browser = None
+
+        try:
+            if self.playwright:
+                await self.playwright.stop()
+        except Exception:
+            pass
+        self.playwright = None
+
+    async def warmup(self):
+        try:
+            await asyncio.sleep(4)
+            session_file = settings.SESSION_STORAGE_PATH
+            if not os.path.isabs(session_file):
+                session_file = os.path.abspath(session_file)
+            has_env = bool(os.getenv("SESSION_JSON") or os.getenv("SESSION_BASE64"))
+            if os.path.exists(session_file) or has_env:
+                await self.initialize()
+        except Exception as e:
+            self.last_error = str(e)
 
     async def initialize(self):
         if self._is_initialized and self.page and not self.page.is_closed():
@@ -41,45 +84,64 @@ class FlowBrowserSession:
             if self._is_initialized and self.page and not self.page.is_closed():
                 return
 
-            self.playwright = await async_playwright().start()
+            try:
+                self.playwright = await async_playwright().start()
 
-            launch_args = [
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-infobars",
-                "--disable-extensions",
-                "--disable-background-networking",
-                "--disable-background-timer-throttling",
-                "--disable-backgrounding-occluded-windows",
-                "--disable-renderer-backgrounding",
-                "--renderer-process-limit=1",
-                "--mute-audio",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--js-flags=--max-old-space-size=256"
-            ]
+                launch_args = [
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-software-rasterizer",
+                    "--disable-infobars",
+                    "--disable-extensions",
+                    "--disable-background-networking",
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                    "--renderer-process-limit=1",
+                    "--mute-audio",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-breakpad",
+                    "--disable-component-update",
+                    "--disable-default-apps",
+                    "--disable-domain-reliability",
+                    "--disable-sync",
+                    "--js-flags=--max-old-space-size=160"
+                ]
 
-            session_file = settings.SESSION_STORAGE_PATH
-            if not os.path.isabs(session_file):
-                session_file = os.path.abspath(session_file)
+                session_file = settings.SESSION_STORAGE_PATH
+                if not os.path.isabs(session_file):
+                    session_file = os.path.abspath(session_file)
 
-            if not os.path.exists(session_file):
-                session_base64 = os.getenv("SESSION_BASE64")
-                session_raw = os.getenv("SESSION_JSON")
-                if session_base64:
-                    os.makedirs(os.path.dirname(session_file), exist_ok=True)
-                    with open(session_file, "wb") as f:
-                        f.write(base64.b64decode(session_base64))
-                elif session_raw:
-                    os.makedirs(os.path.dirname(session_file), exist_ok=True)
-                    with open(session_file, "w", encoding="utf-8") as f:
-                        f.write(session_raw)
+                if not os.path.exists(session_file) or os.path.getsize(session_file) == 0:
+                    session_base64 = os.getenv("SESSION_BASE64")
+                    session_raw = os.getenv("SESSION_JSON")
+                    if session_base64:
+                        os.makedirs(os.path.dirname(session_file), exist_ok=True)
+                        with open(session_file, "wb") as f:
+                            f.write(base64.b64decode(session_base64.strip()))
+                    elif session_raw:
+                        session_raw = session_raw.strip()
+                        if (session_raw.startswith("'") and session_raw.endswith("'")) or (session_raw.startswith('"') and session_raw.endswith('"')):
+                            session_raw = session_raw[1:-1].strip()
+                        os.makedirs(os.path.dirname(session_file), exist_ok=True)
+                        with open(session_file, "w", encoding="utf-8") as f:
+                            f.write(session_raw)
 
-            exec_path = CHROME_EXE if (sys.platform == "win32" and os.path.exists(CHROME_EXE)) else None
+                if not os.path.exists(session_file) or os.path.getsize(session_file) == 0:
+                    raise RuntimeError("Oturum dosyasi bulunamadi. Render Environment ayarlarina SESSION_JSON veya SESSION_BASE64 ekleyin.")
 
-            if os.path.exists(session_file):
+                try:
+                    with open(session_file, "r", encoding="utf-8") as f:
+                        json.load(f)
+                except Exception as e:
+                    raise RuntimeError(f"Oturum dosyasi gecerli bir JSON formati degil: {e}")
+
+                exec_path = CHROME_EXE if (sys.platform == "win32" and os.path.exists(CHROME_EXE)) else None
+
                 self.browser = await self.playwright.chromium.launch(
                     executable_path=exec_path,
                     headless=settings.HEADLESS,
@@ -94,47 +156,58 @@ class FlowBrowserSession:
                     locale="tr-TR",
                     timezone_id="Europe/Istanbul"
                 )
-            else:
-                os.makedirs(settings.USER_DATA_DIR, exist_ok=True)
-                self.context = await self.playwright.chromium.launch_persistent_context(
-                    user_data_dir=settings.USER_DATA_DIR,
-                    executable_path=exec_path,
-                    headless=settings.HEADLESS,
-                    args=launch_args,
-                    ignore_default_args=["--enable-automation"],
-                    viewport={"width": 1280, "height": 720} if settings.HEADLESS else None,
-                    no_viewport=not settings.HEADLESS,
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-                    locale="tr-TR",
-                    timezone_id="Europe/Istanbul"
-                )
 
-            self.page = await self.context.new_page()
+                self.page = await self.context.new_page()
 
-            await self.page.add_init_script("""
-                delete Object.getPrototypeOf(navigator).webdriver;
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {}, app: {} };
-                Object.defineProperty(navigator, 'languages', { get: () => ['tr-TR', 'tr', 'en-US', 'en'] });
-            """)
+                await self.page.add_init_script("""
+                    delete Object.getPrototypeOf(navigator).webdriver;
+                    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                    window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {}, app: {} };
+                    Object.defineProperty(navigator, 'languages', { get: () => ['tr-TR', 'tr', 'en-US', 'en'] });
+                """)
 
-            await self.page.goto("https://flow.google.com/", wait_until="domcontentloaded")
-            await asyncio.sleep(2)
+                await self.page.goto("https://flow.google.com/", wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(2)
 
-            project_link = await self.page.query_selector('a[href*="/project/"]')
-            if project_link:
-                project_url = await project_link.get_attribute("href")
-                if not project_url.startswith("http"):
-                    project_url = "https://flow.google.com" + project_url
-                await self.page.goto(project_url, wait_until="domcontentloaded")
-            else:
-                new_proj_btn = await self.page.query_selector('button:has-text("Yeni proje"), button:has-text("New project")')
-                if new_proj_btn:
-                    await new_proj_btn.click()
-                    await self.page.wait_for_timeout(3000)
+                cur_url = self.page.url
+                if "accounts.google.com" in cur_url:
+                    raise RuntimeError(f"Google oturumu gecersiz veya suresi dolmus. accounts.google.com adresine yonlendirildi: {cur_url}")
 
-            await self.page.wait_for_selector("div.ProseMirror", timeout=45000)
-            self._is_initialized = True
+                login_btn = await self.page.query_selector('a[href*="accounts.google.com"], button:has-text("Oturum aç"), button:has-text("Sign in")')
+                if login_btn:
+                    raise RuntimeError("Google Flow oturumu bulunamadi. SESSION_JSON degerini guncelleyin.")
+
+                prose = await self.page.query_selector("div.ProseMirror")
+                if not prose:
+                    try:
+                        await self.page.wait_for_selector('a[href*="/project/"], button:has-text("Yeni proje"), button:has-text("New project"), button:has-text("Yeni"), button:has-text("New")', timeout=15000)
+                    except Exception:
+                        pass
+
+                    cur_url = self.page.url
+                    if "accounts.google.com" in cur_url:
+                        raise RuntimeError(f"Google oturumu gecersiz. Yonlendirildi: {cur_url}")
+
+                    project_link = await self.page.query_selector('a[href*="/project/"]')
+                    if project_link:
+                        project_url = await project_link.get_attribute("href")
+                        if not project_url.startswith("http"):
+                            project_url = "https://flow.google.com" + project_url
+                        await self.page.goto(project_url, wait_until="domcontentloaded", timeout=30000)
+                    else:
+                        new_proj_btn = await self.page.query_selector('button:has-text("Yeni proje"), button:has-text("New project"), button:has-text("Yeni"), button:has-text("New")')
+                        if new_proj_btn:
+                            await new_proj_btn.click()
+                            await self.page.wait_for_timeout(3000)
+
+                await self.page.wait_for_selector("div.ProseMirror", timeout=35000)
+                self._is_initialized = True
+                self.last_error = None
+            except Exception as e:
+                self.last_error = str(e)
+                self._is_initialized = False
+                await self._cleanup()
+                raise e
 
     async def _attach_reference_image(self, image_base64: Optional[str] = None, image_url: Optional[str] = None):
         if not image_base64 and not image_url:
@@ -375,10 +448,5 @@ class FlowBrowserSession:
 
     async def close(self):
         async with self.lock:
-            if self.context:
-                await self.context.close()
-            if self.browser:
-                await self.browser.close()
-            if self.playwright:
-                await self.playwright.stop()
+            await self._cleanup()
             self._is_initialized = False
