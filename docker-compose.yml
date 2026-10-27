@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  google-flow-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: google-flow-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - HEADLESS=true
+      - PORT=8000
+      - GENERATION_TIMEOUT=120
+      - SESSION_STORAGE_PATH=/app/auth/session.json
+    volumes:
+      - ./auth:/app/auth
+    shm_size: '2gb'
