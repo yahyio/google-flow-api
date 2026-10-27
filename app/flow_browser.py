@@ -28,6 +28,7 @@ class FlowBrowserSession:
         self.lock = asyncio.Lock()
         self._is_initialized = False
         self.last_error: Optional[str] = None
+        self.last_screenshot: Optional[bytes] = None
 
     @classmethod
     def get_instance(cls) -> "FlowBrowserSession":
@@ -173,9 +174,14 @@ class FlowBrowserSession:
                 if "accounts.google.com" in cur_url:
                     raise RuntimeError(f"Google oturumu gecersiz veya suresi dolmus. accounts.google.com adresine yonlendirildi: {cur_url}")
 
-                login_btn = await self.page.query_selector('a[href*="accounts.google.com"], button:has-text("Oturum aç"), button:has-text("Sign in")')
-                if login_btn:
-                    raise RuntimeError("Google Flow oturumu bulunamadi. SESSION_JSON degerini guncelleyin.")
+                for btn_text in ["Anladım", "Got it", "Kabul ediyorum", "Accept all", "Tümünü kabul et", "Devam et", "Continue"]:
+                    dismiss_btn = await self.page.query_selector(f'button:has-text("{btn_text}")')
+                    if dismiss_btn:
+                        try:
+                            await dismiss_btn.click()
+                            await asyncio.sleep(1)
+                        except Exception:
+                            pass
 
                 prose = await self.page.query_selector("div.ProseMirror")
                 if not prose:
@@ -206,6 +212,11 @@ class FlowBrowserSession:
             except Exception as e:
                 self.last_error = str(e)
                 self._is_initialized = False
+                try:
+                    if self.page and not self.page.is_closed():
+                        self.last_screenshot = await self.page.screenshot(full_page=False)
+                except Exception:
+                    pass
                 await self._cleanup()
                 raise e
 

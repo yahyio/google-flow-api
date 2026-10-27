@@ -95,13 +95,15 @@ async def initialize_browser():
 @app.get("/api/v1/debug/screenshot")
 async def debug_screenshot():
     session = FlowBrowserSession.get_instance()
-    if not session.page or session.page.is_closed():
-        raise HTTPException(status_code=400, detail="Tarayici acik degil. Once /api/v1/init cagirin.")
-    try:
-        screenshot_bytes = await session.page.screenshot(full_page=False)
-        return Response(content=screenshot_bytes, media_type="image/png")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    if session.page and not session.page.is_closed():
+        try:
+            screenshot_bytes = await session.page.screenshot(full_page=False)
+            return Response(content=screenshot_bytes, media_type="image/png")
+        except Exception:
+            pass
+    if session.last_screenshot:
+        return Response(content=session.last_screenshot, media_type="image/png")
+    raise HTTPException(status_code=400, detail="Tarayici acik degil veya ekran goruntusu bulunamadi.")
 
 @app.get("/api/v1/models", response_model=List[ModelInfo])
 async def list_models():
