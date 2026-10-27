@@ -342,120 +342,128 @@ class FlowBrowserSession:
 
         async with self.lock:
             start_time = time.time()
+            try:
+                await self._wait_until_ready_for_input()
 
-            await self._wait_until_ready_for_input()
-
-            initial_count = await self.page.evaluate("""
-                () => document.querySelectorAll('img[alt*="Option"]').length
-            """)
-
-            if image_base64 or image_url:
-                await self._attach_reference_image(image_base64=image_base64, image_url=image_url)
-
-            editor = await self.page.query_selector("div.ProseMirror")
-            if not editor:
-                project_link = await self.page.query_selector('a[href*="/project/"]')
-                if project_link:
-                    url = await project_link.get_attribute("href")
-                    if not url.startswith("http"):
-                        url = "https://flow.google.com" + url
-                    await self.page.goto(url, wait_until="domcontentloaded")
-                    await self.page.wait_for_selector("div.ProseMirror", timeout=20000)
-                    editor = await self.page.query_selector("div.ProseMirror")
-
-            if not editor:
-                raise RuntimeError("Editor not found")
-
-            await editor.click()
-            await self.page.keyboard.press("Control+A")
-            await self.page.keyboard.press("Backspace")
-            await asyncio.sleep(0.1)
-            await self.page.keyboard.type(prompt, delay=2)
-            await asyncio.sleep(0.4)
-
-            gen_btn = self.page.locator('button[aria-label*="Oluşturmaya başla"], button[aria-label*="Generate"]').last
-            if await gen_btn.count():
-                await gen_btn.click()
-            else:
-                await self.page.keyboard.press("Enter")
-
-            await asyncio.sleep(1.0)
-
-            if (await editor.inner_text()).strip():
-                await editor.click()
-                await page.keyboard.press("Enter")
-                await asyncio.sleep(1.0)
-
-            if (await editor.inner_text()).strip() and await gen_btn.count():
-                try:
-                    await gen_btn.click(force=True)
-                    await asyncio.sleep(1.0)
-                except Exception:
-                    pass
-
-            timeout = settings.GENERATION_TIMEOUT
-            elapsed = 0
-            new_image_found = False
-
-            while elapsed < timeout:
-                await asyncio.sleep(1.0)
-                elapsed += 1.0
-
-                if await self._handle_retry_if_present():
-                    elapsed = 0
-
-                current_count = await self.page.evaluate("""
+                initial_count = await self.page.evaluate("""
                     () => document.querySelectorAll('img[alt*="Option"]').length
                 """)
-                if current_count > initial_count:
-                    new_image_found = True
-                    break
 
-            if not new_image_found:
-                raise TimeoutError(f"Image generation timeout after {timeout} seconds")
+                if image_base64 or image_url:
+                    await self._attach_reference_image(image_base64=image_base64, image_url=image_url)
 
-            await asyncio.sleep(1.5)
+                editor = await self.page.query_selector("div.ProseMirror")
+                if not editor:
+                    project_link = await self.page.query_selector('a[href*="/project/"]')
+                    if project_link:
+                        url = await project_link.get_attribute("href")
+                        if not url.startswith("http"):
+                            url = "https://flow.google.com" + url
+                        await self.page.goto(url, wait_until="domcontentloaded")
+                        await self.page.wait_for_selector("div.ProseMirror", timeout=20000)
+                        editor = await self.page.query_selector("div.ProseMirror")
 
-            img_data = await self.page.evaluate("""
-                () => {
-                    const imgs = document.querySelectorAll('img[alt*="Option"]');
-                    const lastImg = imgs[imgs.length - 1];
-                    if (!lastImg) return null;
+                if not editor:
+                    raise RuntimeError("Editor not found")
 
-                    const canvas = document.createElement('canvas');
-                    canvas.width = lastImg.naturalWidth;
-                    canvas.height = lastImg.naturalHeight;
-                    const ctx = canvas.getContext('2d');
-                    ctx.drawImage(lastImg, 0, 0);
+                await editor.click()
+                await self.page.keyboard.press("Control+A")
+                await self.page.keyboard.press("Backspace")
+                await asyncio.sleep(0.1)
+                await self.page.keyboard.type(prompt, delay=2)
+                await asyncio.sleep(0.4)
 
-                    return {
-                        src: lastImg.src,
-                        dataUrl: canvas.toDataURL('image/png'),
-                        width: lastImg.naturalWidth,
-                        height: lastImg.naturalHeight
-                    };
+                gen_btn = self.page.locator('button[aria-label*="Oluşturmaya başla"], button[aria-label*="Generate"]').last
+                if await gen_btn.count():
+                    await gen_btn.click()
+                else:
+                    await self.page.keyboard.press("Enter")
+
+                await asyncio.sleep(1.0)
+
+                if (await editor.inner_text()).strip():
+                    await editor.click()
+                    await self.page.keyboard.press("Enter")
+                    await asyncio.sleep(1.0)
+
+                if (await editor.inner_text()).strip() and await gen_btn.count():
+                    try:
+                        await gen_btn.click(force=True)
+                        await asyncio.sleep(1.0)
+                    except Exception:
+                        pass
+
+                timeout = settings.GENERATION_TIMEOUT
+                elapsed = 0
+                new_image_found = False
+
+                while elapsed < timeout:
+                    await asyncio.sleep(1.0)
+                    elapsed += 1.0
+
+                    if await self._handle_retry_if_present():
+                        elapsed = 0
+
+                    current_count = await self.page.evaluate("""
+                        () => document.querySelectorAll('img[alt*="Option"]').length
+                    """)
+                    if current_count > initial_count:
+                        new_image_found = True
+                        break
+
+                if not new_image_found:
+                    raise TimeoutError(f"Image generation timeout after {timeout} seconds")
+
+                await asyncio.sleep(1.5)
+
+                img_data = await self.page.evaluate("""
+                    () => {
+                        const imgs = document.querySelectorAll('img[alt*="Option"]');
+                        const lastImg = imgs[imgs.length - 1];
+                        if (!lastImg) return null;
+
+                        const canvas = document.createElement('canvas');
+                        canvas.width = lastImg.naturalWidth;
+                        canvas.height = lastImg.naturalHeight;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(lastImg, 0, 0);
+
+                        return {
+                            src: lastImg.src,
+                            dataUrl: canvas.toDataURL('image/png'),
+                            width: lastImg.naturalWidth,
+                            height: lastImg.naturalHeight
+                        };
+                    }
+                """)
+
+                await self._stop_trailing_generation_if_active()
+
+                if not img_data or not img_data.get("dataUrl"):
+                    raise RuntimeError("Failed to extract image from canvas")
+
+                data_url = img_data["dataUrl"]
+                base64_data = data_url.split(",")[1] if "," in data_url else data_url
+                image_bytes = base64.b64decode(base64_data)
+
+                exec_time = round(time.time() - start_time, 2)
+
+                return {
+                    "image_url": img_data["src"],
+                    "image_base64": base64_data,
+                    "image_bytes": image_bytes,
+                    "width": img_data["width"],
+                    "height": img_data["height"],
+                    "execution_time_seconds": exec_time
                 }
-            """)
-
-            await self._stop_trailing_generation_if_active()
-
-            if not img_data or not img_data.get("dataUrl"):
-                raise RuntimeError("Failed to extract image from canvas")
-
-            data_url = img_data["dataUrl"]
-            base64_data = data_url.split(",")[1] if "," in data_url else data_url
-            image_bytes = base64.b64decode(base64_data)
-
-            exec_time = round(time.time() - start_time, 2)
-
-            return {
-                "image_url": img_data["src"],
-                "image_base64": base64_data,
-                "image_bytes": image_bytes,
-                "width": img_data["width"],
-                "height": img_data["height"],
-                "execution_time_seconds": exec_time
-            }
+            except Exception as e:
+                self.last_error = str(e)
+                try:
+                    if self.page and not self.page.is_closed():
+                        self.last_screenshot = await self.page.screenshot(full_page=False)
+                except Exception:
+                    pass
+                raise e
 
     async def close(self):
         async with self.lock:
