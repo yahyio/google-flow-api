@@ -24,9 +24,8 @@ from app.flow_browser import FlowBrowserSession
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    session = FlowBrowserSession.get_instance()
-    asyncio.create_task(session.initialize())
     yield
+    session = FlowBrowserSession.get_instance()
     await session.close()
 
 app = FastAPI(
@@ -42,6 +41,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/")
+@app.head("/")
+async def root():
+    return {"status": "ok", "app": settings.APP_NAME}
 
 @app.get("/health")
 async def health_check():

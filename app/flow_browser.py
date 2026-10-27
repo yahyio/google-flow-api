@@ -4,7 +4,6 @@ import asyncio
 import base64
 import time
 import tempfile
-import random
 from typing import Optional, Dict, Any
 import requests
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright
@@ -49,7 +48,17 @@ class FlowBrowserSession:
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
-                "--disable-infobars"
+                "--disable-infobars",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                "--renderer-process-limit=1",
+                "--mute-audio",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--js-flags=--max-old-space-size=256"
             ]
 
             session_file = settings.SESSION_STORAGE_PATH
@@ -67,7 +76,7 @@ class FlowBrowserSession:
                 )
                 self.context = await self.browser.new_context(
                     storage_state=session_file,
-                    viewport={"width": 1920, "height": 1080} if settings.HEADLESS else None,
+                    viewport={"width": 1280, "height": 720} if settings.HEADLESS else None,
                     no_viewport=not settings.HEADLESS,
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
                     locale="tr-TR",
@@ -81,7 +90,7 @@ class FlowBrowserSession:
                     headless=settings.HEADLESS,
                     args=launch_args,
                     ignore_default_args=["--enable-automation"],
-                    viewport={"width": 1920, "height": 1080} if settings.HEADLESS else None,
+                    viewport={"width": 1280, "height": 720} if settings.HEADLESS else None,
                     no_viewport=not settings.HEADLESS,
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
                     locale="tr-TR",
@@ -278,7 +287,7 @@ class FlowBrowserSession:
 
             if (await editor.inner_text()).strip():
                 await editor.click()
-                await self.page.keyboard.press("Enter")
+                await page.keyboard.press("Enter")
                 await asyncio.sleep(1.0)
 
             if (await editor.inner_text()).strip() and await gen_btn.count():
