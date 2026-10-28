@@ -15,7 +15,11 @@ from app.models import (
     GenerateImageRequest,
     GenerateImageResponse,
     GeneratedImage,
+    GenerateVideoRequest,
+    GenerateVideoResponse,
+    GeneratedVideo,
     ImageModel,
+    VideoModel,
     AspectRatio,
     OutputFormat,
     ModelInfo,
@@ -113,6 +117,8 @@ async def list_models():
         ModelInfo(id=ImageModel.NANO_BANANA_2_LITE.value, name="Nano Banana 2 Lite", internal_name="HARBOR_SEAL"),
         ModelInfo(id=ImageModel.UPSAMPLE_2K.value, name="2K Upscaler", internal_name="GEM_PIX_2_UPSAMPLE_2K"),
         ModelInfo(id=ImageModel.UPSAMPLE_4K.value, name="4K Upscaler", internal_name="GEM_PIX_2_UPSAMPLE_4K"),
+        ModelInfo(id=VideoModel.VEO_2.value, name="Google Veo 2", internal_name="VEO_2"),
+        ModelInfo(id=VideoModel.VEO_FAST.value, name="Google Veo Fast", internal_name="VEO_FAST"),
     ]
 
 @app.get("/api/v1/aspect-ratios", response_model=List[AspectRatioInfo])
@@ -155,6 +161,38 @@ async def generate_image(request: GenerateImageRequest):
             base64=base64_data,
             width=result.get("width"),
             height=result.get("height")
+        ),
+        execution_time_seconds=result["execution_time_seconds"]
+    )
+
+@app.post("/api/v1/generate-video", response_model=GenerateVideoResponse)
+async def generate_video(request: GenerateVideoRequest):
+    session = FlowBrowserSession.get_instance()
+    try:
+        result = await session.generate_video(
+            prompt=request.prompt,
+            model=request.model,
+            aspect_ratio=request.aspect_ratio,
+            seed=request.seed,
+            image_base64=request.image_base64,
+            image_url=request.image_url
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if request.output_format == OutputFormat.BINARY:
+        return Response(content=result["video_bytes"], media_type="video/mp4")
+
+    base64_data = result["video_base64"] if request.output_format == OutputFormat.BASE64 else None
+
+    return GenerateVideoResponse(
+        success=True,
+        prompt=request.prompt,
+        model=request.model.value,
+        aspect_ratio=request.aspect_ratio.value,
+        video=GeneratedVideo(
+            url=result["video_url"],
+            base64=base64_data
         ),
         execution_time_seconds=result["execution_time_seconds"]
     )

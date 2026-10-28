@@ -13,7 +13,7 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from app.config import settings
-from app.models import ImageModel, AspectRatio
+from app.models import ImageModel, VideoModel, AspectRatio
 
 CHROME_EXE = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 
@@ -467,6 +467,183 @@ class FlowBrowserSession:
                     "image_bytes": image_bytes,
                     "width": img_data["width"],
                     "height": img_data["height"],
+                    "execution_time_seconds": exec_time
+                }
+            except Exception as e:
+                self.last_error = str(e)
+                try:
+                    if self.page and not self.page.is_closed():
+                        self.last_screenshot = await self.page.screenshot(full_page=False)
+                except Exception:
+                    pass
+                raise e
+
+    async def _select_video_mode(self, model: VideoModel):
+        try:
+            video_toggle = self.page.locator(
+                'button:has-text("Video"), button[aria-label*="Video"], button:has(mat-icon:has-text("videocam")), button:has(mat-icon:has-text("movie"))'
+            ).first
+            if await video_toggle.count() and await video_toggle.is_visible():
+                await video_toggle.click()
+                await asyncio.sleep(0.5)
+
+            model_btn = self.page.locator(
+                'button:has-text("Nano"), button:has-text("Veo"), button[aria-label*="Model"], button[aria-label*="model"]'
+            ).last
+            if await model_btn.count() and await model_btn.is_visible():
+                await model_btn.click()
+                await asyncio.sleep(0.6)
+                target_text = "Fast" if model == VideoModel.VEO_FAST else "Veo"
+                veo_opt = self.page.locator(
+                    f'.cdk-overlay-container button:has-text("{target_text}"), .cdk-overlay-container [role="option"]:has-text("{target_text}"), .cdk-overlay-container mat-option:has-text("{target_text}"), .cdk-overlay-container button:has-text("Veo")'
+                ).first
+                if await veo_opt.count() and await veo_opt.is_visible():
+                    await veo_opt.click()
+                    await asyncio.sleep(0.5)
+                else:
+                    await self.page.keyboard.press("Escape")
+        except Exception:
+            pass
+
+    async def generate_video(
+        self,
+        prompt: str,
+        model: VideoModel = VideoModel.VEO_2,
+        aspect_ratio: AspectRatio = AspectRatio.RATIO_16_9,
+        seed: Optional[int] = None,
+        image_base64: Optional[str] = None,
+        image_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        await self.initialize()
+
+        async with self.lock:
+            start_time = time.time()
+            try:
+                await self._wait_until_ready_for_input()
+
+                initial_videos = await self.page.evaluate("""
+                    () => Array.from(document.querySelectorAll('video'))
+                        .map(v => v.src || (v.querySelector('source') ? v.querySelector('source').src : ''))
+                        .filter(Boolean)
+                """)
+
+                if image_base64 or image_url:
+                    await self._attach_reference_image(image_base64=image_base64, image_url=image_url)
+
+                await self._select_video_mode(model)
+
+                editor = await self.page.query_selector("div.ProseMirror")
+                if not editor:
+                    project_link = await self.page.query_selector('a[href*="/project/"]')
+                    if project_link:
+                        url = await project_link.get_attribute("href")
+                        if not url.startswith("http"):
+                            url = "https://flow.google.com" + url
+                        await self.page.goto(url, wait_until="domcontentloaded")
+                        await self.page.wait_for_selector("div.ProseMirror", timeout=20000)
+                        editor = await self.page.query_selector("div.ProseMirror")
+
+                if not editor:
+                    raise RuntimeError("Editor not found")
+
+                video_prompt = prompt
+                lower_p = prompt.lower()
+                if "video" not in lower_p and "animate" not in lower_p:
+                    video_prompt = f"Generate a video ({aspect_ratio.value}): {prompt}"
+
+                await editor.click()
+                await self.page.keyboard.press("Control+A")
+                await self.page.keyboard.press("Backspace")
+                await asyncio.sleep(0.1)
+                await self.page.keyboard.type(video_prompt, delay=2)
+                await asyncio.sleep(0.4)
+
+                gen_btn = self.page.locator('button[aria-label*="Oluşturmaya başla"], button[aria-label*="Generate"]').last
+                if await gen_btn.count():
+                    await gen_btn.click()
+                else:
+                    await self.page.keyboard.press("Enter")
+
+                await asyncio.sleep(1.0)
+
+                if (await editor.inner_text()).strip():
+                    await editor.click()
+                    await self.page.keyboard.press("Enter")
+                    await asyncio.sleep(1.0)
+
+                if (await editor.inner_text()).strip() and await gen_btn.count():
+                    try:
+                        await gen_btn.click(force=True)
+                        await asyncio.sleep(1.0)
+                    except Exception:
+                        pass
+
+                timeout = max(settings.GENERATION_TIMEOUT, 240)
+                elapsed = 0
+                new_video_src = None
+
+                while elapsed < timeout:
+                    await asyncio.sleep(1.5)
+                    elapsed += 1.5
+
+                    if await self._handle_retry_if_present():
+                        elapsed = 0
+
+                    current_videos = await self.page.evaluate("""
+                        () => Array.from(document.querySelectorAll('video'))
+                            .map(v => v.src || (v.querySelector('source') ? v.querySelector('source').src : ''))
+                            .filter(Boolean)
+                    """)
+
+                    for v_src in reversed(current_videos):
+                        if v_src not in initial_videos:
+                            new_video_src = v_src
+                            break
+
+                    if new_video_src:
+                        break
+
+                if not new_video_src:
+                    raise TimeoutError(f"Video generation timeout after {timeout} seconds")
+
+                await asyncio.sleep(2.0)
+
+                video_data = await self.page.evaluate("""
+                    async (targetSrc) => {
+                        try {
+                            const response = await fetch(targetSrc);
+                            const blob = await response.blob();
+                            return await new Promise((resolve, reject) => {
+                                const reader = new FileReader();
+                                reader.onloadend = () => resolve(reader.result);
+                                reader.onerror = reject;
+                                reader.readAsDataURL(blob);
+                            });
+                        } catch (e) {
+                            return null;
+                        }
+                    }
+                """, new_video_src)
+
+                await self._stop_trailing_generation_if_active()
+
+                if video_data and "," in video_data:
+                    base64_data = video_data.split(",")[1]
+                    video_bytes = base64.b64decode(base64_data)
+                elif new_video_src.startswith("http"):
+                    resp = requests.get(new_video_src, timeout=60)
+                    resp.raise_for_status()
+                    video_bytes = resp.content
+                    base64_data = base64.b64encode(video_bytes).decode("utf-8")
+                else:
+                    raise RuntimeError("Failed to extract video bytes from page")
+
+                exec_time = round(time.time() - start_time, 2)
+
+                return {
+                    "video_url": new_video_src,
+                    "video_base64": base64_data,
+                    "video_bytes": video_bytes,
                     "execution_time_seconds": exec_time
                 }
             except Exception as e:

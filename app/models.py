@@ -9,6 +9,10 @@ class ImageModel(str, Enum):
     UPSAMPLE_2K = "upsample_2k"
     UPSAMPLE_4K = "upsample_4k"
 
+class VideoModel(str, Enum):
+    VEO_2 = "veo_2"
+    VEO_FAST = "veo_fast"
+
 class AspectRatio(str, Enum):
     RATIO_16_9 = "16:9"
     RATIO_9_16 = "9:16"
@@ -42,6 +46,27 @@ class GenerateImageResponse(BaseModel):
     model: str
     aspect_ratio: str
     image: GeneratedImage
+    execution_time_seconds: float
+
+class GenerateVideoRequest(BaseModel):
+    prompt: str = Field(..., example="smooth camera pan across a neon cyberpunk street at night")
+    model: VideoModel = Field(default=VideoModel.VEO_2)
+    aspect_ratio: AspectRatio = Field(default=AspectRatio.RATIO_16_9)
+    seed: Optional[int] = Field(default=None)
+    image_base64: Optional[str] = Field(default=None)
+    image_url: Optional[str] = Field(default=None)
+    output_format: OutputFormat = Field(default=OutputFormat.BASE64)
+
+class GeneratedVideo(BaseModel):
+    url: Optional[str] = None
+    base64: Optional[str] = None
+
+class GenerateVideoResponse(BaseModel):
+    success: bool
+    prompt: str
+    model: str
+    aspect_ratio: str
+    video: GeneratedVideo
     execution_time_seconds: float
 
 class ModelInfo(BaseModel):
