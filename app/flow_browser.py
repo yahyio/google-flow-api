@@ -478,37 +478,62 @@ class FlowBrowserSession:
                     pass
                 raise e
 
-    async def _select_video_mode(self, model: VideoModel):
-        try:
-            video_toggle = self.page.locator(
-                'button:has-text("Video"), button[aria-label*="Video"], button:has(mat-icon:has-text("videocam")), button:has(mat-icon:has-text("movie"))'
-            ).first
-            if await video_toggle.count() and await video_toggle.is_visible():
-                await video_toggle.click()
-                await asyncio.sleep(0.5)
+    VIDEO_MODEL_LABELS = {
+        VideoModel.OMNI_1_1_FLASH: "Omni 1.1 Flash",
+        VideoModel.VEO_3_1_LITE: "Veo 3.1 - Lite",
+        VideoModel.VEO_3_1_FAST: "Veo 3.1 - Fast",
+        VideoModel.VEO_3_1_QUALITY: "Veo 3.1 - Quality",
+    }
 
-            model_btn = self.page.locator(
-                'button:has-text("Nano"), button:has-text("Veo"), button[aria-label*="Model"], button[aria-label*="model"]'
-            ).last
-            if await model_btn.count() and await model_btn.is_visible():
-                await model_btn.click()
+    async def _select_video_mode(self, model: VideoModel):
+        target_label = self.VIDEO_MODEL_LABELS.get(model, "Omni 1.1 Flash")
+        try:
+            settings_btn = self.page.locator('button[aria-label="Ayarlar"], button:has-text("Ayarlar")').last
+            if await settings_btn.count() and await settings_btn.is_visible():
+                await settings_btn.click()
                 await asyncio.sleep(0.6)
-                target_text = "Fast" if model == VideoModel.VEO_FAST else "Veo"
-                veo_opt = self.page.locator(
-                    f'.cdk-overlay-container button:has-text("{target_text}"), .cdk-overlay-container [role="option"]:has-text("{target_text}"), .cdk-overlay-container mat-option:has-text("{target_text}"), .cdk-overlay-container button:has-text("Veo")'
-                ).first
-                if await veo_opt.count() and await veo_opt.is_visible():
-                    await veo_opt.click()
+
+                never_radio = self.page.locator('mat-radio-button:has-text("Hiçbir zaman"), [role="radio"]:has-text("Hiçbir zaman"), mat-radio-button:has-text("Never")').first
+                if await never_radio.count() and await never_radio.is_visible():
+                    try:
+                        await never_radio.click()
+                        await asyncio.sleep(0.3)
+                    except Exception:
+                        pass
+
+                video_dropdown = self.page.locator(
+                    'button[aria-label*="Varsayılan video üretim modeli"], button[aria-label*="video"], button:has-text("Omni 1.1"), button:has-text("Veo 3.1")'
+                ).last
+                if await video_dropdown.count() and await video_dropdown.is_visible():
+                    await video_dropdown.click()
                     await asyncio.sleep(0.5)
-                else:
-                    await self.page.keyboard.press("Escape")
+
+                    opt = self.page.locator(
+                        f'[role="menuitem"]:has-text("{target_label}"), .cdk-overlay-container button:has-text("{target_label}")'
+                    ).first
+                    if await opt.count() and await opt.is_visible():
+                        await opt.click()
+                        await asyncio.sleep(0.4)
+                    else:
+                        await self.page.keyboard.press("Escape")
+                        await asyncio.sleep(0.3)
+
+                save_btn = self.page.locator('button:has-text("Kaydet"), button:has-text("Save")').first
+                if await save_btn.count() and await save_btn.is_visible() and await save_btn.is_enabled():
+                    await save_btn.click()
+                    await asyncio.sleep(0.6)
+
+                back_btn = self.page.locator('button[aria-label="Geri"], button:has-text("Geri"), button[aria-label="Back"]').first
+                if await back_btn.count() and await back_btn.is_visible():
+                    await back_btn.click()
+                    await asyncio.sleep(0.5)
         except Exception:
             pass
 
     async def generate_video(
         self,
         prompt: str,
-        model: VideoModel = VideoModel.VEO_2,
+        model: VideoModel = VideoModel.OMNI_1_1_FLASH,
         aspect_ratio: AspectRatio = AspectRatio.RATIO_16_9,
         seed: Optional[int] = None,
         image_base64: Optional[str] = None,

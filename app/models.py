@@ -10,8 +10,10 @@ class ImageModel(str, Enum):
     UPSAMPLE_4K = "upsample_4k"
 
 class VideoModel(str, Enum):
-    VEO_2 = "veo_2"
-    VEO_FAST = "veo_fast"
+    OMNI_1_1_FLASH = "omni_1_1_flash"
+    VEO_3_1_LITE = "veo_3_1_lite"
+    VEO_3_1_FAST = "veo_3_1_fast"
+    VEO_3_1_QUALITY = "veo_3_1_quality"
 
 class AspectRatio(str, Enum):
     RATIO_16_9 = "16:9"
@@ -50,7 +52,7 @@ class GenerateImageResponse(BaseModel):
 
 class GenerateVideoRequest(BaseModel):
     prompt: str = Field(..., example="smooth camera pan across a neon cyberpunk street at night")
-    model: VideoModel = Field(default=VideoModel.VEO_2)
+    model: VideoModel = Field(default=VideoModel.OMNI_1_1_FLASH)
     aspect_ratio: AspectRatio = Field(default=AspectRatio.RATIO_16_9)
     seed: Optional[int] = Field(default=None)
     image_base64: Optional[str] = Field(default=None)

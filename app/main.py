@@ -117,8 +117,10 @@ async def list_models():
         ModelInfo(id=ImageModel.NANO_BANANA_2_LITE.value, name="Nano Banana 2 Lite", internal_name="HARBOR_SEAL"),
         ModelInfo(id=ImageModel.UPSAMPLE_2K.value, name="2K Upscaler", internal_name="GEM_PIX_2_UPSAMPLE_2K"),
         ModelInfo(id=ImageModel.UPSAMPLE_4K.value, name="4K Upscaler", internal_name="GEM_PIX_2_UPSAMPLE_4K"),
-        ModelInfo(id=VideoModel.VEO_2.value, name="Google Veo 2", internal_name="VEO_2"),
-        ModelInfo(id=VideoModel.VEO_FAST.value, name="Google Veo Fast", internal_name="VEO_FAST"),
+        ModelInfo(id=VideoModel.OMNI_1_1_FLASH.value, name="Omni 1.1 Flash", internal_name="OMNI_1_1_FLASH"),
+        ModelInfo(id=VideoModel.VEO_3_1_LITE.value, name="Veo 3.1 - Lite", internal_name="VEO_3_1_LITE"),
+        ModelInfo(id=VideoModel.VEO_3_1_FAST.value, name="Veo 3.1 - Fast", internal_name="VEO_3_1_FAST"),
+        ModelInfo(id=VideoModel.VEO_3_1_QUALITY.value, name="Veo 3.1 - Quality", internal_name="VEO_3_1_QUALITY"),
     ]
 
 @app.get("/api/v1/aspect-ratios", response_model=List[AspectRatioInfo])

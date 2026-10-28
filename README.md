@@ -1,6 +1,6 @@
 # Google Flow Image & Video Generation API
 
-API service for programmatic image and video generation via Google Flow models (`nano_banana_2_1`, `nano_banana_pro`, `nano_banana_2_lite`, `upsample_2k`, `upsample_4k`, `veo_2`, `veo_fast`).
+API service for programmatic image and video generation via Google Flow models (`nano_banana_2_1`, `nano_banana_pro`, `nano_banana_2_lite`, `upsample_2k`, `upsample_4k`, `omni_1_1_flash`, `veo_3_1_lite`, `veo_3_1_fast`, `veo_3_1_quality`).
 
 ---
 
@@ -57,7 +57,7 @@ Content-Type: application/json
 
 ---
 
-### 2. Generate Video (Google Veo)
+### 2. Generate Video (Omni 1.1 Flash & Veo 3.1)
 `POST /api/v1/generate-video`
 
 Supports both Text-to-Video and Image-to-Video (when `image_base64` or `image_url` is provided).
@@ -71,7 +71,7 @@ Content-Type: application/json
 ```json
 {
   "prompt": "string (required)",
-  "model": "veo_2 | veo_fast (default: veo_2)",
+  "model": "omni_1_1_flash | veo_3_1_lite | veo_3_1_fast | veo_3_1_quality (default: omni_1_1_flash)",
   "aspect_ratio": "16:9 | 9:16 | 1:1 | 4:3 | 3:4 (default: 16:9)",
   "seed": "integer (optional)",
   "image_base64": "string (optional base64 encoded starting frame for image-to-video)",
@@ -82,22 +82,22 @@ Content-Type: application/json
 
 #### Examples
 
-##### A. Text-to-Video
+##### A. Text-to-Video (Omni 1.1 Flash)
 ```json
 {
   "prompt": "slow cinematic drone shot over a misty pine forest at sunrise",
-  "model": "veo_2",
+  "model": "omni_1_1_flash",
   "aspect_ratio": "16:9",
   "output_format": "base64"
 }
 ```
 
-##### B. Image-to-Video (Animate Reference Image)
+##### B. Image-to-Video (Animate Reference Image with Veo 3.1)
 ```json
 {
   "prompt": "the character waves hand and smiles at the camera, subtle camera zoom in",
   "image_base64": "iVBORw0KGgoAAAANSUhEUgAA...",
-  "model": "veo_2",
+  "model": "veo_3_1_fast",
   "aspect_ratio": "16:9",
   "output_format": "base64"
 }
@@ -108,7 +108,7 @@ Content-Type: application/json
 {
   "success": true,
   "prompt": "slow cinematic drone shot over a misty pine forest at sunrise",
-  "model": "veo_2",
+  "model": "omni_1_1_flash",
   "aspect_ratio": "16:9",
   "video": {
     "url": "https://flow.google.com/...",
@@ -134,8 +134,10 @@ Returns `video/mp4` raw binary stream directly.
   {"id": "nano_banana_2_lite", "name": "Nano Banana 2 Lite", "internal_name": "HARBOR_SEAL"},
   {"id": "upsample_2k", "name": "2K Upscaler", "internal_name": "GEM_PIX_2_UPSAMPLE_2K"},
   {"id": "upsample_4k", "name": "4K Upscaler", "internal_name": "GEM_PIX_2_UPSAMPLE_4K"},
-  {"id": "veo_2", "name": "Google Veo 2", "internal_name": "VEO_2"},
-  {"id": "veo_fast", "name": "Google Veo Fast", "internal_name": "VEO_FAST"}
+  {"id": "omni_1_1_flash", "name": "Omni 1.1 Flash", "internal_name": "OMNI_1_1_FLASH"},
+  {"id": "veo_3_1_lite", "name": "Veo 3.1 - Lite", "internal_name": "VEO_3_1_LITE"},
+  {"id": "veo_3_1_fast", "name": "Veo 3.1 - Fast", "internal_name": "VEO_3_1_FAST"},
+  {"id": "veo_3_1_quality", "name": "Veo 3.1 - Quality", "internal_name": "VEO_3_1_QUALITY"}
 ]
 ```
 
