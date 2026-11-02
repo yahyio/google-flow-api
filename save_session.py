@@ -7,52 +7,38 @@ from playwright.async_api import async_playwright
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-CHROME_EXE = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 
 async def main():
-    session_file = Path("auth/session.json")
+    base_dir = Path(__file__).resolve().parent
+    session_file = base_dir / "auth" / "session.json"
     session_file.parent.mkdir(parents=True, exist_ok=True)
 
     storage = str(session_file) if session_file.exists() and session_file.stat().st_size > 0 else None
-    exec_path = CHROME_EXE if os.path.exists(CHROME_EXE) else None
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            executable_path=exec_path,
-            headless=False,
-            args=["--disable-blink-features=AutomationControlled", "--start-maximized"],
-            ignore_default_args=["--enable-automation"]
-        )
+        browser = await p.chromium.launch(headless=False)
         context = await browser.new_context(
             storage_state=storage,
-            no_viewport=True,
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+            viewport={"width": 1600, "height": 1000},
             locale="tr-TR",
             timezone_id="Europe/Istanbul"
         )
         page = await context.new_page()
 
-        await page.add_init_script("""
-            delete Object.getPrototypeOf(navigator).webdriver;
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {}, app: {} };
-            Object.defineProperty(navigator, 'languages', { get: () => ['tr-TR', 'tr', 'en-US', 'en'] });
-        """)
-
-        await page.goto("https://flow.google.com/")
-        print("Lutfen acilan Chrome penceresinde Google hesabiniza giris yapin.")
-        print("Flow arayuzu veya proje sayfasi acildiginda oturum otomatik olarak algilanacaktir...")
+        await page.goto("https://flow.google.com/", wait_until="domcontentloaded")
+        print("Lutfen acilan pencerede Google hesabiniza giris yapin.")
+        print("Flow proje ekrani acildiginda oturum otomatik olarak kaydedilecektir...")
 
         logged_in = False
         for _ in range(300):
             await asyncio.sleep(1.0)
             try:
                 cur_url = page.url
-                if "/project" in cur_url:
-                    logged_in = True
-                    break
-
-                target = await page.query_selector('div.ProseMirror, a[href*="/project/"], button:has-text("Yeni proje"), button:has-text("New project"), a.project-card, [aria-label*="Yeni proje"]')
+                if "accounts.google.com" in cur_url:
+                    continue
+                target = await page.query_selector(
+                    'div.ProseMirror, a[href*="/project/"], button:has-text("Yeni proje"), button:has-text("New project")'
+                )
                 if target:
                     logged_in = True
                     break
@@ -61,12 +47,13 @@ async def main():
 
         if not logged_in:
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, input, "Otomatik algilanamadiysa giris yaptiktan sonra ENTER tusuna basin: ")
+            await loop.run_in_executor(None, input, "Giris yaptiktan sonra ENTER tusuna basin: ")
 
-        await asyncio.sleep(2.0)
+        await asyncio.sleep(3.0)
         await context.storage_state(path=str(session_file))
         print("Giris basarili! Oturum kaydedildi:", session_file.resolve())
         await browser.close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

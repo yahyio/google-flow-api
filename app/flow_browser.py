@@ -79,13 +79,40 @@ class FlowBrowserSession:
         except Exception as e:
             self.last_error = str(e)
 
-    async def _ensure_project_editor(self):
-        cur_url = self.page.url
-        if "accounts.google.com" in cur_url:
-            raise RuntimeError("Google oturumunuz gecersiz veya suresi dolmus. Lutfen 'login.bat' calistirarak yeniden giris yapin.")
+    async def _interactive_relogin(self, session_file: str):
+        login_browser = await self.playwright.chromium.launch(headless=False)
+        storage = session_file if os.path.exists(session_file) and os.path.getsize(session_file) > 0 else None
+        login_ctx = await login_browser.new_context(
+            storage_state=storage,
+            viewport={"width": 1600, "height": 1000},
+            locale="tr-TR",
+            timezone_id="Europe/Istanbul"
+        )
+        login_page = await login_ctx.new_page()
+        await login_page.goto("https://accounts.google.com/ServiceLogin?continue=https://flow.google.com/", wait_until="domcontentloaded")
+        for _ in range(300):
+            await asyncio.sleep(1.0)
+            try:
+                u = login_page.url
+                if "accounts.google.com" in u or "/about" in u:
+                    continue
+                el = await login_page.query_selector('div.ProseMirror, a[href*="/project/"], button:has-text("Yeni proje"), button:has-text("New project")')
+                if el:
+                    break
+            except Exception:
+                pass
+        await asyncio.sleep(3.0)
+        await login_ctx.storage_state(path=session_file)
+        await login_browser.close()
 
+    async def _ensure_project_editor(self):
+        session_file = settings.SESSION_STORAGE_PATH
+        if not os.path.isabs(session_file):
+            session_file = os.path.abspath(session_file)
+
+        cur_url = self.page.url
         if "/about" in cur_url:
-            cta_btn = self.page.locator('button:has-text("Google Flow ile oluştur"), button:has-text("Google Flow\'u deneyin"), button:has-text("Try Google Flow")').first
+            cta_btn = self.page.locator('button:has-text("Google Flow ile oluştur"), button:has-text("Create with Google Flow"), button:has-text("Google Flow\'u deneyin"), button:has-text("Try Google Flow")').first
             if await cta_btn.count():
                 try:
                     await cta_btn.click()
@@ -110,13 +137,33 @@ class FlowBrowserSession:
         prose = await self.page.query_selector("div.ProseMirror")
         if not prose:
             try:
-                await self.page.wait_for_selector('a[href*="/project/"], button:has-text("Yeni proje"), button:has-text("New project"), button:has-text("Yeni"), button:has-text("New")', timeout=15000)
+                await self.page.wait_for_selector('a[href*="/project/"], button:has-text("Yeni proje"), button:has-text("New project"), button:has-text("Yeni"), button:has-text("New")', timeout=12000)
             except Exception:
                 pass
 
             cur_url = self.page.url
-            if "accounts.google.com" in cur_url:
-                raise RuntimeError(f"Google oturumu gecersiz. Yonlendirildi: {cur_url}")
+            if "accounts.google.com" in cur_url or "/about" in cur_url:
+                if sys.platform == "win32":
+                    await self._interactive_relogin(session_file)
+                    try:
+                        await self.page.close()
+                    except Exception:
+                        pass
+                    try:
+                        await self.context.close()
+                    except Exception:
+                        pass
+                    self.context = await self.browser.new_context(
+                        storage_state=session_file,
+                        viewport={"width": 1600, "height": 1000},
+                        locale="tr-TR",
+                        timezone_id="Europe/Istanbul"
+                    )
+                    self.page = await self.context.new_page()
+                    await self.page.goto("https://flow.google.com/", wait_until="domcontentloaded", timeout=30000)
+                    await asyncio.sleep(3)
+                else:
+                    raise RuntimeError(f"Google oturumu gecersiz. Yonlendirildi: {cur_url}")
 
             project_link = await self.page.query_selector('a[href*="/project/"]')
             if project_link:
@@ -143,30 +190,33 @@ class FlowBrowserSession:
             try:
                 self.playwright = await async_playwright().start()
 
-                launch_args = [
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--disable-software-rasterizer",
-                    "--disable-infobars",
-                    "--disable-extensions",
-                    "--disable-background-networking",
-                    "--disable-background-timer-throttling",
-                    "--disable-backgrounding-occluded-windows",
-                    "--disable-renderer-backgrounding",
-                    "--renderer-process-limit=1",
-                    "--mute-audio",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                    "--disable-breakpad",
-                    "--disable-component-update",
-                    "--disable-default-apps",
-                    "--disable-domain-reliability",
-                    "--disable-sync",
-                    "--js-flags=--max-old-space-size=160"
-                ]
+                if sys.platform == "win32":
+                    launch_args = []
+                else:
+                    launch_args = [
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                        "--disable-software-rasterizer",
+                        "--disable-infobars",
+                        "--disable-extensions",
+                        "--disable-background-networking",
+                        "--disable-background-timer-throttling",
+                        "--disable-backgrounding-occluded-windows",
+                        "--disable-renderer-backgrounding",
+                        "--renderer-process-limit=1",
+                        "--mute-audio",
+                        "--no-first-run",
+                        "--no-default-browser-check",
+                        "--disable-breakpad",
+                        "--disable-component-update",
+                        "--disable-default-apps",
+                        "--disable-domain-reliability",
+                        "--disable-sync",
+                        "--js-flags=--max-old-space-size=160"
+                    ]
 
                 session_file = settings.SESSION_STORAGE_PATH
                 if not os.path.isabs(session_file):
@@ -196,17 +246,13 @@ class FlowBrowserSession:
                 except Exception as e:
                     raise RuntimeError(f"Oturum dosyasi gecerli bir JSON formati degil: {e}")
 
-                exec_path = CHROME_EXE if (sys.platform == "win32" and os.path.exists(CHROME_EXE)) else None
-
                 self.browser = await self.playwright.chromium.launch(
-                    executable_path=exec_path,
                     headless=settings.HEADLESS,
                     args=launch_args
                 )
                 self.context = await self.browser.new_context(
                     storage_state=session_file,
-                    viewport={"width": 1280, "height": 720} if settings.HEADLESS else None,
-                    no_viewport=not settings.HEADLESS,
+                    viewport={"width": 1600, "height": 1000},
                     locale="tr-TR",
                     timezone_id="Europe/Istanbul"
                 )
@@ -214,9 +260,13 @@ class FlowBrowserSession:
                 self.page = await self.context.new_page()
 
                 await self.page.goto("https://flow.google.com/", wait_until="domcontentloaded", timeout=30000)
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
 
                 await self._ensure_project_editor()
+                try:
+                    await self.context.storage_state(path=session_file)
+                except Exception:
+                    pass
                 self._is_initialized = True
                 self.last_error = None
             except Exception as e:
@@ -252,26 +302,31 @@ class FlowBrowserSession:
             with open(temp_path, "wb") as f:
                 f.write(img_bytes)
 
-            add_btn = self.page.locator('button[aria-label*="İçerik öğelerini istem kutusuna ekle"], button[aria-label*="Add content"]').last
+            add_btn = self.page.locator('button[aria-label="İçerik öğelerini istem kutusuna ekle"], button[aria-label*="İçerik öğelerini istem kutusuna ekle"], button[aria-label*="Add content"]').last
             if not (await add_btn.count() and await add_btn.is_visible()):
                 return
 
             await add_btn.click()
-            await self.page.wait_for_timeout(1000)
+            await self.page.wait_for_timeout(1200)
 
             search_input = self.page.locator('input[placeholder="Öğe arayın"], input[placeholder*="Search"]').first
-            if digest in self._uploaded_hashes and await search_input.count() and await search_input.is_visible():
-                await search_input.fill(f"ref_{digest}")
-                await self.page.wait_for_timeout(1200)
-                existing_item = self.page.locator(f'.cdk-overlay-container button:has-text("{ref_name}")').first
-                if await existing_item.count() and await existing_item.is_visible():
-                    await existing_item.click()
-                    await self.page.wait_for_timeout(1000)
-                    confirm = self.page.locator('button:has-text("İsteme ekle"), button:has-text("Add to prompt")').first
-                    if await confirm.count() and await confirm.is_visible():
-                        await confirm.click()
-                        await self.page.wait_for_timeout(1000)
-                    return
+            if await search_input.count() and await search_input.is_visible():
+                search_terms = [f"ref_{digest}"]
+                if digest == "32f92da39a":
+                    search_terms.insert(0, "rocco_sheet_v2")
+                for term in search_terms:
+                    await search_input.fill(term)
+                    await self.page.wait_for_timeout(1400)
+                    existing_item = self.page.locator(f'.cdk-overlay-container button:has-text("{term}")').first
+                    if await existing_item.count() and await existing_item.is_visible():
+                        await existing_item.click()
+                        await self.page.wait_for_timeout(1200)
+                        confirm = self.page.locator('button:has-text("İsteme ekle"), button:has-text("Add to prompt")').first
+                        if await confirm.count() and await confirm.is_visible():
+                            await confirm.click()
+                            await self.page.wait_for_timeout(1200)
+                        self._uploaded_hashes[digest] = ref_name
+                        return
 
             upload_btn = self.page.locator('.cdk-overlay-container button.upload-button, .cdk-overlay-container button[aria-label*="Medya yükle"], button:has-text("Medya yükle")').first
             if not (await upload_btn.count()):
@@ -299,10 +354,18 @@ class FlowBrowserSession:
                     break
                 await asyncio.sleep(1.0)
 
+            if await search_input.count() and await search_input.is_visible():
+                await search_input.fill(f"ref_{digest}")
+                await self.page.wait_for_timeout(1400)
+                uploaded_item = self.page.locator(f'.cdk-overlay-container button:has-text("{ref_name}")').first
+                if await uploaded_item.count() and await uploaded_item.is_visible():
+                    await uploaded_item.click()
+                    await self.page.wait_for_timeout(1200)
+
             confirm = self.page.locator('button:has-text("İsteme ekle"), button:has-text("Add to prompt")').first
             if await confirm.count() and await confirm.is_visible():
                 await confirm.click()
-                await self.page.wait_for_timeout(1000)
+                await self.page.wait_for_timeout(1200)
 
             self._uploaded_hashes[digest] = ref_name
 
@@ -369,9 +432,25 @@ class FlowBrowserSession:
     async def _get_rendered_image_srcs(self) -> list[str]:
         return await self.page.evaluate("""
             () => Array.from(document.querySelectorAll('img[alt*="Option"], img[src*="/asb/"]'))
-                .filter(i => i.complete && i.naturalWidth > 200 && i.src)
+                .filter(i => i.complete && i.naturalWidth > 256 && i.src)
                 .map(i => i.src)
         """)
+
+    async def _get_settled_image_srcs(self) -> set[str]:
+        last_len = -1
+        stable = 0
+        srcs = []
+        for _ in range(15):
+            srcs = await self._get_rendered_image_srcs()
+            if len(srcs) == last_len:
+                stable += 1
+            else:
+                stable = 0
+            if stable >= 2:
+                break
+            last_len = len(srcs)
+            await asyncio.sleep(0.6)
+        return set(srcs)
 
     async def generate_image(
         self,
@@ -395,10 +474,12 @@ class FlowBrowserSession:
                     await asyncio.sleep(2)
                     await self._ensure_project_editor()
 
-                initial_srcs = set(await self._get_rendered_image_srcs())
+                initial_srcs = await self._get_settled_image_srcs()
 
                 if image_base64 or image_url:
                     await self._attach_reference_image(image_base64=image_base64, image_url=image_url)
+                    for s in await self._get_rendered_image_srcs():
+                        initial_srcs.add(s)
 
                 editor = await self.page.query_selector("div.ProseMirror")
                 if not editor:
@@ -412,50 +493,53 @@ class FlowBrowserSession:
                 await self.page.keyboard.press("Control+A")
                 await self.page.keyboard.press("Backspace")
                 await asyncio.sleep(0.1)
-                await self.page.keyboard.type(prompt, delay=2)
-                await asyncio.sleep(0.4)
+                await self.page.keyboard.type(prompt, delay=5)
+                await asyncio.sleep(0.8)
 
-                gen_btn = self.page.locator('button[aria-label*="Oluşturmaya başla"], button[aria-label*="Generate"]').last
+                gen_btn = self.page.locator('button[aria-label="Oluşturmaya başla"], button[aria-label*="Oluşturmaya başla"], button[aria-label*="Generate"]').last
                 if await gen_btn.count():
                     await gen_btn.click()
                 else:
                     await self.page.keyboard.press("Enter")
 
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(2.0)
 
                 if (await editor.inner_text()).strip():
                     await editor.click()
                     await self.page.keyboard.press("Enter")
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(2.0)
 
                 if (await editor.inner_text()).strip() and await gen_btn.count():
                     try:
                         await gen_btn.click(force=True)
-                        await asyncio.sleep(1.0)
+                        await asyncio.sleep(1.5)
                     except Exception:
                         pass
 
                 timeout = settings.GENERATION_TIMEOUT
                 elapsed = 0
                 new_src = None
+                retry_count = 0
 
                 while elapsed < timeout:
                     await asyncio.sleep(1.0)
                     elapsed += 1.0
 
-                    if await self._handle_retry_if_present():
+                    if retry_count < 2 and await self._handle_retry_if_present():
+                        retry_count += 1
                         elapsed = 0
 
                     current_srcs = await self._get_rendered_image_srcs()
-                    new_candidates = [s for s in current_srcs if s not in initial_srcs]
+                    new_candidates = [s for s in current_srcs[:4] if s not in initial_srcs]
                     if new_candidates:
-                        new_src = new_candidates[0]
+                        await asyncio.sleep(3.0)
+                        refreshed = await self._get_rendered_image_srcs()
+                        settled_new = [s for s in refreshed[:4] if s not in initial_srcs]
+                        new_src = settled_new[0] if settled_new else new_candidates[0]
                         break
 
                 if not new_src:
                     raise TimeoutError(f"Image generation timeout after {timeout} seconds")
-
-                await asyncio.sleep(1.5)
 
                 img_data = await self.page.evaluate("""
                     (targetSrc) => {
@@ -486,6 +570,14 @@ class FlowBrowserSession:
                 data_url = img_data["dataUrl"]
                 base64_data = data_url.split(",")[1] if "," in data_url else data_url
                 image_bytes = base64.b64decode(base64_data)
+
+                try:
+                    session_file = settings.SESSION_STORAGE_PATH
+                    if not os.path.isabs(session_file):
+                        session_file = os.path.abspath(session_file)
+                    await self.context.storage_state(path=session_file)
+                except Exception:
+                    pass
 
                 exec_time = round(time.time() - start_time, 2)
 
