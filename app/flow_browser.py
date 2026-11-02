@@ -4,6 +4,7 @@ import asyncio
 import base64
 import time
 import json
+import hashlib
 import tempfile
 from typing import Optional, Dict, Any
 import requests
@@ -29,6 +30,7 @@ class FlowBrowserSession:
         self._is_initialized = False
         self.last_error: Optional[str] = None
         self.last_screenshot: Optional[bytes] = None
+        self._uploaded_hashes: Dict[str, str] = {}
 
     @classmethod
     def get_instance(cls) -> "FlowBrowserSession":
@@ -76,6 +78,59 @@ class FlowBrowserSession:
                 await self.initialize()
         except Exception as e:
             self.last_error = str(e)
+
+    async def _ensure_project_editor(self):
+        cur_url = self.page.url
+        if "accounts.google.com" in cur_url:
+            raise RuntimeError("Google oturumunuz gecersiz veya suresi dolmus. Lutfen 'login.bat' calistirarak yeniden giris yapin.")
+
+        if "/about" in cur_url:
+            cta_btn = self.page.locator('button:has-text("Google Flow ile oluştur"), button:has-text("Google Flow\'u deneyin"), button:has-text("Try Google Flow")').first
+            if await cta_btn.count():
+                try:
+                    await cta_btn.click()
+                    await asyncio.sleep(3)
+                except Exception:
+                    pass
+
+        for btn_text in ["Anladım", "Got it", "Kabul ediyorum", "Accept all", "Tümünü kabul et", "Devam et", "Continue"]:
+            dismiss_btn = await self.page.query_selector(f'button:has-text("{btn_text}")')
+            if dismiss_btn:
+                try:
+                    await dismiss_btn.click()
+                    await asyncio.sleep(1)
+                except Exception:
+                    pass
+
+        try:
+            await self.page.keyboard.press("Escape")
+        except Exception:
+            pass
+
+        prose = await self.page.query_selector("div.ProseMirror")
+        if not prose:
+            try:
+                await self.page.wait_for_selector('a[href*="/project/"], button:has-text("Yeni proje"), button:has-text("New project"), button:has-text("Yeni"), button:has-text("New")', timeout=15000)
+            except Exception:
+                pass
+
+            cur_url = self.page.url
+            if "accounts.google.com" in cur_url:
+                raise RuntimeError(f"Google oturumu gecersiz. Yonlendirildi: {cur_url}")
+
+            project_link = await self.page.query_selector('a[href*="/project/"]')
+            if project_link:
+                project_url = await project_link.get_attribute("href")
+                if not project_url.startswith("http"):
+                    project_url = "https://flow.google.com" + project_url
+                await self.page.goto(project_url, wait_until="domcontentloaded", timeout=30000)
+            else:
+                new_proj_btn = await self.page.query_selector('button:has-text("Yeni proje"), button:has-text("New project"), button:has-text("Yeni"), button:has-text("New")')
+                if new_proj_btn:
+                    await new_proj_btn.click()
+                    await self.page.wait_for_timeout(3000)
+
+        await self.page.wait_for_selector("div.ProseMirror", timeout=35000)
 
     async def initialize(self):
         if self._is_initialized and self.page and not self.page.is_closed():
@@ -170,56 +225,7 @@ class FlowBrowserSession:
                 await self.page.goto("https://flow.google.com/", wait_until="domcontentloaded", timeout=30000)
                 await asyncio.sleep(2)
 
-                cur_url = self.page.url
-                if "accounts.google.com" in cur_url:
-                    raise RuntimeError(f"Google oturumunuz gecersiz veya suresi dolmus. Lutfen 'login.bat' calistirarak yeniden giris yapin.")
-
-                if "/about" in cur_url:
-                    cta_btn = self.page.locator('button:has-text("Google Flow ile oluştur"), button:has-text("Google Flow\'u deneyin"), button:has-text("Try Google Flow")').first
-                    if await cta_btn.count():
-                        try:
-                            await cta_btn.click()
-                            await asyncio.sleep(3)
-                        except Exception:
-                            pass
-
-                cur_url = self.page.url
-                if "accounts.google.com" in cur_url:
-                    raise RuntimeError(f"Google oturumunuz gecersiz veya suresi dolmus. Lutfen 'login.bat' calistirarak yeniden giris yapin.")
-
-                for btn_text in ["Anladım", "Got it", "Kabul ediyorum", "Accept all", "Tümünü kabul et", "Devam et", "Continue"]:
-                    dismiss_btn = await self.page.query_selector(f'button:has-text("{btn_text}")')
-                    if dismiss_btn:
-                        try:
-                            await dismiss_btn.click()
-                            await asyncio.sleep(1)
-                        except Exception:
-                            pass
-
-                prose = await self.page.query_selector("div.ProseMirror")
-                if not prose:
-                    try:
-                        await self.page.wait_for_selector('a[href*="/project/"], button:has-text("Yeni proje"), button:has-text("New project"), button:has-text("Yeni"), button:has-text("New")', timeout=15000)
-                    except Exception:
-                        pass
-
-                    cur_url = self.page.url
-                    if "accounts.google.com" in cur_url:
-                        raise RuntimeError(f"Google oturumu gecersiz. Yonlendirildi: {cur_url}")
-
-                    project_link = await self.page.query_selector('a[href*="/project/"]')
-                    if project_link:
-                        project_url = await project_link.get_attribute("href")
-                        if not project_url.startswith("http"):
-                            project_url = "https://flow.google.com" + project_url
-                        await self.page.goto(project_url, wait_until="domcontentloaded", timeout=30000)
-                    else:
-                        new_proj_btn = await self.page.query_selector('button:has-text("Yeni proje"), button:has-text("New project"), button:has-text("Yeni"), button:has-text("New")')
-                        if new_proj_btn:
-                            await new_proj_btn.click()
-                            await self.page.wait_for_timeout(3000)
-
-                await self.page.wait_for_selector("div.ProseMirror", timeout=35000)
+                await self._ensure_project_editor()
                 self._is_initialized = True
                 self.last_error = None
             except Exception as e:
@@ -248,18 +254,35 @@ class FlowBrowserSession:
                 resp.raise_for_status()
                 img_bytes = resp.content
 
-            fd, temp_path = tempfile.mkstemp(suffix=".png")
-            os.write(fd, img_bytes)
-            os.close(fd)
+            digest = hashlib.md5(img_bytes).hexdigest()[:10]
+            ref_name = f"ref_{digest}.png"
+            temp_dir = tempfile.gettempdir()
+            temp_path = os.path.join(temp_dir, ref_name)
+            with open(temp_path, "wb") as f:
+                f.write(img_bytes)
 
-            add_btn = self.page.locator('button[aria-label*="İçerik öğelerini istem kutusuna ekle"]').last
+            add_btn = self.page.locator('button[aria-label*="İçerik öğelerini istem kutusuna ekle"], button[aria-label*="Add content"]').last
             if not (await add_btn.count() and await add_btn.is_visible()):
                 return
 
             await add_btn.click()
-            await self.page.wait_for_timeout(800)
+            await self.page.wait_for_timeout(1000)
 
-            upload_btn = self.page.locator('.cdk-overlay-container button.upload-button, .cdk-overlay-container button[aria-label*="Medya yükle"]').first
+            search_input = self.page.locator('input[placeholder="Öğe arayın"], input[placeholder*="Search"]').first
+            if digest in self._uploaded_hashes and await search_input.count() and await search_input.is_visible():
+                await search_input.fill(f"ref_{digest}")
+                await self.page.wait_for_timeout(1200)
+                existing_item = self.page.locator(f'.cdk-overlay-container button:has-text("{ref_name}")').first
+                if await existing_item.count() and await existing_item.is_visible():
+                    await existing_item.click()
+                    await self.page.wait_for_timeout(1000)
+                    confirm = self.page.locator('button:has-text("İsteme ekle"), button:has-text("Add to prompt")').first
+                    if await confirm.count() and await confirm.is_visible():
+                        await confirm.click()
+                        await self.page.wait_for_timeout(1000)
+                    return
+
+            upload_btn = self.page.locator('.cdk-overlay-container button.upload-button, .cdk-overlay-container button[aria-label*="Medya yükle"], button:has-text("Medya yükle")').first
             if not (await upload_btn.count()):
                 await self.page.keyboard.press("Escape")
                 return
@@ -285,8 +308,18 @@ class FlowBrowserSession:
                     break
                 await asyncio.sleep(1.0)
 
+            confirm = self.page.locator('button:has-text("İsteme ekle"), button:has-text("Add to prompt")').first
+            if await confirm.count() and await confirm.is_visible():
+                await confirm.click()
+                await self.page.wait_for_timeout(1000)
+
+            self._uploaded_hashes[digest] = ref_name
+
         except Exception:
-            pass
+            try:
+                await self.page.keyboard.press("Escape")
+            except Exception:
+                pass
         finally:
             if temp_path and os.path.exists(temp_path):
                 try:
@@ -342,6 +375,13 @@ class FlowBrowserSession:
                     break
             await asyncio.sleep(1.0)
 
+    async def _get_rendered_image_srcs(self) -> list[str]:
+        return await self.page.evaluate("""
+            () => Array.from(document.querySelectorAll('img[alt*="Option"], img[src*="/asb/"]'))
+                .filter(i => i.complete && i.naturalWidth > 200 && i.src)
+                .map(i => i.src)
+        """)
+
     async def generate_image(
         self,
         prompt: str,
@@ -358,23 +398,21 @@ class FlowBrowserSession:
             try:
                 await self._wait_until_ready_for_input()
 
-                initial_count = await self.page.evaluate("""
-                    () => document.querySelectorAll('img[alt*="Option"]').length
-                """)
+                editor = await self.page.query_selector("div.ProseMirror")
+                if not editor:
+                    await self.page.goto("https://flow.google.com/", wait_until="domcontentloaded", timeout=30000)
+                    await asyncio.sleep(2)
+                    await self._ensure_project_editor()
+
+                initial_srcs = set(await self._get_rendered_image_srcs())
 
                 if image_base64 or image_url:
                     await self._attach_reference_image(image_base64=image_base64, image_url=image_url)
 
                 editor = await self.page.query_selector("div.ProseMirror")
                 if not editor:
-                    project_link = await self.page.query_selector('a[href*="/project/"]')
-                    if project_link:
-                        url = await project_link.get_attribute("href")
-                        if not url.startswith("http"):
-                            url = "https://flow.google.com" + url
-                        await self.page.goto(url, wait_until="domcontentloaded")
-                        await self.page.wait_for_selector("div.ProseMirror", timeout=20000)
-                        editor = await self.page.query_selector("div.ProseMirror")
+                    await self._ensure_project_editor()
+                    editor = await self.page.query_selector("div.ProseMirror")
 
                 if not editor:
                     raise RuntimeError("Editor not found")
@@ -408,7 +446,7 @@ class FlowBrowserSession:
 
                 timeout = settings.GENERATION_TIMEOUT
                 elapsed = 0
-                new_image_found = False
+                new_src = None
 
                 while elapsed < timeout:
                     await asyncio.sleep(1.0)
@@ -417,38 +455,37 @@ class FlowBrowserSession:
                     if await self._handle_retry_if_present():
                         elapsed = 0
 
-                    current_count = await self.page.evaluate("""
-                        () => document.querySelectorAll('img[alt*="Option"]').length
-                    """)
-                    if current_count > initial_count:
-                        new_image_found = True
+                    current_srcs = await self._get_rendered_image_srcs()
+                    new_candidates = [s for s in current_srcs if s not in initial_srcs]
+                    if new_candidates:
+                        new_src = new_candidates[0]
                         break
 
-                if not new_image_found:
+                if not new_src:
                     raise TimeoutError(f"Image generation timeout after {timeout} seconds")
 
                 await asyncio.sleep(1.5)
 
                 img_data = await self.page.evaluate("""
-                    () => {
-                        const imgs = document.querySelectorAll('img[alt*="Option"]');
-                        const lastImg = imgs[imgs.length - 1];
-                        if (!lastImg) return null;
+                    (targetSrc) => {
+                        const imgs = Array.from(document.querySelectorAll('img[alt*="Option"], img[src*="/asb/"]'));
+                        const targetImg = imgs.find(i => i.src === targetSrc) || imgs[0];
+                        if (!targetImg) return null;
 
                         const canvas = document.createElement('canvas');
-                        canvas.width = lastImg.naturalWidth;
-                        canvas.height = lastImg.naturalHeight;
+                        canvas.width = targetImg.naturalWidth;
+                        canvas.height = targetImg.naturalHeight;
                         const ctx = canvas.getContext('2d');
-                        ctx.drawImage(lastImg, 0, 0);
+                        ctx.drawImage(targetImg, 0, 0);
 
                         return {
-                            src: lastImg.src,
+                            src: targetImg.src,
                             dataUrl: canvas.toDataURL('image/png'),
-                            width: lastImg.naturalWidth,
-                            height: lastImg.naturalHeight
+                            width: targetImg.naturalWidth,
+                            height: targetImg.naturalHeight
                         };
                     }
-                """)
+                """, new_src)
 
                 await self._stop_trailing_generation_if_active()
 
@@ -559,14 +596,8 @@ class FlowBrowserSession:
 
                 editor = await self.page.query_selector("div.ProseMirror")
                 if not editor:
-                    project_link = await self.page.query_selector('a[href*="/project/"]')
-                    if project_link:
-                        url = await project_link.get_attribute("href")
-                        if not url.startswith("http"):
-                            url = "https://flow.google.com" + url
-                        await self.page.goto(url, wait_until="domcontentloaded")
-                        await self.page.wait_for_selector("div.ProseMirror", timeout=20000)
-                        editor = await self.page.query_selector("div.ProseMirror")
+                    await self._ensure_project_editor()
+                    editor = await self.page.query_selector("div.ProseMirror")
 
                 if not editor:
                     raise RuntimeError("Editor not found")
@@ -603,7 +634,7 @@ class FlowBrowserSession:
                     except Exception:
                         pass
 
-                timeout = max(settings.GENERATION_TIMEOUT, 240)
+                timeout = settings.GENERATION_TIMEOUT
                 elapsed = 0
                 new_video_src = None
 

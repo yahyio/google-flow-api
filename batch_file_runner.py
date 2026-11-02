@@ -3,7 +3,6 @@ import sys
 import re
 import asyncio
 import base64
-import time
 import random
 from pathlib import Path
 from playwright.async_api import async_playwright
@@ -14,14 +13,43 @@ if sys.platform == "win32":
 SESSION_PATH = Path(r"C:\Users\yahowa\Desktop\reverseinstafly\google-flow-api\auth\session.json")
 CHROME_EXE = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 FLOW_URL = "https://flow.google.com/"
+DEFAULT_TARGET = r"C:\Users\yahowa\AppData\Local\Claude-Data\claude_pzs8sxrjxfjjc\scratch-workspaces\32a64456-85c9-45f5-8b4d-ee040224c3ac\a930890e-456b-4c02-a40d-d29cc3fddf62\scratch-2026-10-26-5e6450\videolar\03-humans-vanished\kalan-promptlar.txt"
+
+STYLE_V2 = (
+    "Style: adult animated sitcom, thin uniform black linework, flat muted colors, simple hard shadows, "
+    "same style as the attached sheet, not a kids' cartoon. Keep the scene simple: a plain flat "
+    "single-color background and at most one or two objects. 16:9 landscape, no text, no letters, no watermark."
+)
+ROCCO_V2 = (
+    "Using the attached character sheet, draw Rocco the raccoon EXACTLY as designed (same tired half-lidded "
+    "eyes, black eye mask, mustard-yellow hoodie, gray pants, red sneakers, ringed tail). Scene: {scene}. "
+)
+WORLD_V2 = (
+    "Use the attached character sheet ONLY as a style reference; Rocco does not appear in this image. "
+    "Any raccoons or animals are ordinary animals without clothes. Scene: {scene}. "
+)
 
 def parse_prompt_file(file_path: Path):
     content = file_path.read_text(encoding="utf-8")
 
-    ref_match = re.search(r"Flow'da her prompt'tan önce (.+?) dosyasını", content)
-    ref_file_rel = ref_match.group(1).strip() if ref_match else None
+    if file_path.name.lower() == "senaryo.md":
+        scenes = []
+        for line in content.splitlines():
+            m = re.match(r"^\| (\d+) \| (.+?) \| (.+?) \|$", line)
+            if m:
+                scene_num = int(m.group(1))
+                scene_desc = m.group(3).strip()
+                prefix = ROCCO_V2 if "Rocco" in scene_desc else WORLD_V2
+                scenes.append((scene_num, prefix.format(scene=scene_desc) + STYLE_V2))
+        return "rocco_sheet_v2.png", None, scenes
 
-    out_match = re.search(r"Çıkan resmi (.+?) klasörüne", content)
+    header_part = content.split("=== SAHNE")[0]
+    ref_match = re.search(r"Flow'da her prompt'tan önce (.+?) dosyasını", header_part)
+    if not ref_match:
+        ref_match = re.search(r"([a-zA-Z0-9_./\\-]+\.png)", header_part)
+    ref_file_rel = ref_match.group(1).strip() if ref_match else "rocco_sheet_v2.png"
+
+    out_match = re.search(r"Çıkan resmi (.+?) klasörüne", header_part)
     out_dir_rel = out_match.group(1).strip() if out_match else None
 
     scenes = []
@@ -33,29 +61,95 @@ def parse_prompt_file(file_path: Path):
 
     return ref_file_rel, out_dir_rel, scenes
 
+def resolve_reference_path(base_dir: Path, video_dir: Path, ref_rel: str | None) -> Path | None:
+    candidates = []
+    if ref_rel:
+        candidates.append(base_dir / ref_rel)
+        candidates.append(base_dir / "_marka" / Path(ref_rel).name)
+        candidates.append(video_dir / ref_rel)
+    candidates.append(base_dir / "_marka" / "rocco_sheet_v2.png")
+    candidates.append(base_dir / "_marka" / "rocco_sheet.png")
+    for c in candidates:
+        if c.exists():
+            return c.resolve()
+    return None
+
 async def open_flow_project(page):
-    await page.goto(FLOW_URL, wait_until="domcontentloaded")
-    await page.wait_for_timeout(3000)
-    link = await page.query_selector('a[href*="/project/"]')
-    if link:
-        href = await link.get_attribute("href")
-        url = href if href.startswith("http") else "https://flow.google.com" + href
-        await page.goto(url, wait_until="domcontentloaded")
-    else:
-        btn = await page.query_selector('button:has-text("Yeni proje"), button:has-text("New project")')
-        if btn:
-            await btn.click()
+    await page.goto(FLOW_URL, wait_until="domcontentloaded", timeout=35000)
+    await page.wait_for_timeout(2500)
+
+    if "/about" in page.url:
+        cta = page.locator('button:has-text("Google Flow ile oluştur"), button:has-text("Google Flow\'u deneyin"), button:has-text("Try Google Flow")').first
+        if await cta.count():
+            try:
+                await cta.click()
+                await page.wait_for_timeout(3000)
+            except Exception:
+                pass
+
+    for btn_text in ["Anladım", "Got it", "Kabul ediyorum", "Accept all", "Tümünü kabul et", "Devam et", "Continue"]:
+        dismiss_btn = await page.query_selector(f'button:has-text("{btn_text}")')
+        if dismiss_btn:
+            try:
+                await dismiss_btn.click()
+                await page.wait_for_timeout(800)
+            except Exception:
+                pass
+
+    try:
+        await page.keyboard.press("Escape")
+    except Exception:
+        pass
+
+    editor = await page.query_selector("div.ProseMirror")
+    if not editor:
+        try:
+            await page.wait_for_selector('a[href*="/project/"], button:has-text("Yeni proje"), button:has-text("New project"), button:has-text("Yeni"), button:has-text("New")', timeout=15000)
+        except Exception:
+            pass
+
+        link = await page.query_selector('a[href*="/project/"]')
+        if link:
+            href = await link.get_attribute("href")
+            url = href if href.startswith("http") else "https://flow.google.com" + href
+            await page.goto(url, wait_until="domcontentloaded", timeout=35000)
+        else:
+            btn = await page.query_selector('button:has-text("Yeni proje"), button:has-text("New project"), button:has-text("Yeni"), button:has-text("New")')
+            if btn:
+                await btn.click()
+                await page.wait_for_timeout(3000)
+
     await page.wait_for_selector("div.ProseMirror", timeout=45000)
 
 async def attach_reference(page, ref_path: Path):
-    add_btn = page.locator('button[aria-label*="İçerik öğelerini istem kutusuna ekle"]').last
+    try:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(300)
+    except Exception:
+        pass
+
+    add_btn = page.locator('button[aria-label*="İçerik öğelerini istem kutusuna ekle"], button[aria-label*="Add content"]').last
     if not (await add_btn.count() and await add_btn.is_visible()):
         return
 
     await add_btn.click()
-    await page.wait_for_timeout(800)
+    await page.wait_for_timeout(1000)
 
-    upload_btn = page.locator('.cdk-overlay-container button.upload-button, .cdk-overlay-container button[aria-label*="Medya yükle"]').first
+    search_input = page.locator('input[placeholder="Öğe arayın"], input[placeholder*="Search"]').first
+    if await search_input.count() and await search_input.is_visible():
+        await search_input.fill(ref_path.stem)
+        await page.wait_for_timeout(1300)
+        lib_item = page.locator(f'.cdk-overlay-container button:has-text("{ref_path.name}")').first
+        if await lib_item.count() and await lib_item.is_visible():
+            await lib_item.click()
+            await page.wait_for_timeout(1000)
+            confirm = page.locator('button:has-text("İsteme ekle"), button:has-text("Add to prompt")').first
+            if await confirm.count() and await confirm.is_visible():
+                await confirm.click()
+                await page.wait_for_timeout(1200)
+            return
+
+    upload_btn = page.locator('.cdk-overlay-container button.upload-button, .cdk-overlay-container button[aria-label*="Medya yükle"], button:has-text("Medya yükle")').first
     if not (await upload_btn.count()):
         await page.keyboard.press("Escape")
         return
@@ -80,6 +174,11 @@ async def attach_reference(page, ref_path: Path):
         if not spinners:
             break
         await asyncio.sleep(1.0)
+
+    confirm = page.locator('button:has-text("İsteme ekle"), button:has-text("Add to prompt")').first
+    if await confirm.count() and await confirm.is_visible():
+        await confirm.click()
+        await page.wait_for_timeout(1200)
 
 async def handle_retry_if_present(page):
     retry_btn = page.locator('button:has-text("Tekrar dene"), button:has-text("Try again")')
@@ -129,16 +228,56 @@ async def wait_until_ready_for_input(page):
                 break
         await asyncio.sleep(1.0)
 
-async def save_rendered_image(page, img_el, out_path: Path):
-    data_url = await img_el.evaluate("""img => {
+async def get_rendered_image_srcs(page) -> list[str]:
+    return await page.evaluate("""() => {
+        const imgs = Array.from(document.querySelectorAll('img[alt*="Option"], img[src*="/asb/"]'));
+        return imgs
+            .filter(i => i.complete && i.naturalWidth > 200 && i.src)
+            .map(i => i.src);
+    }""")
+
+async def get_settled_image_srcs(page) -> set[str]:
+    last_count = -1
+    stable = 0
+    srcs = []
+    for _ in range(15):
+        srcs = await get_rendered_image_srcs(page)
+        if len(srcs) == last_count:
+            stable += 1
+            if stable >= 2:
+                break
+        else:
+            stable = 0
+        last_count = len(srcs)
+        await asyncio.sleep(0.8)
+    return set(srcs)
+
+async def save_image_by_src(page, context, src: str, out_path: Path) -> bool:
+    if src.startswith("http"):
+        try:
+            resp = await context.request.get(src)
+            if resp.ok:
+                out_path.write_bytes(await resp.body())
+                return True
+        except Exception:
+            pass
+
+    data_url = await page.evaluate("""(targetSrc) => {
+        const imgs = Array.from(document.querySelectorAll('img[alt*="Option"], img[src*="/asb/"]'));
+        const img = imgs.find(i => i.src === targetSrc);
+        if (!img || !img.naturalWidth) return null;
         const c = document.createElement('canvas');
         c.width = img.naturalWidth;
         c.height = img.naturalHeight;
         c.getContext('2d').drawImage(img, 0, 0);
         return c.toDataURL('image/png');
-    }""")
-    raw = base64.b64decode(data_url.split(",", 1)[1])
-    out_path.write_bytes(raw)
+    }""", src)
+
+    if data_url and "," in data_url:
+        raw = base64.b64decode(data_url.split(",", 1)[1])
+        out_path.write_bytes(raw)
+        return True
+    return False
 
 async def submit_prompt(page, prompt: str):
     await wait_until_ready_for_input(page)
@@ -176,13 +315,27 @@ async def submit_prompt(page, prompt: str):
         except Exception:
             pass
 
-async def run_batch(file_path_str: str):
-    file_path = Path(file_path_str).resolve()
-    base_dir = file_path.parent.parent.parent
+async def run_batch(target_str: str):
+    target_path = Path(target_str).resolve()
+    if target_path.is_dir():
+        if (target_path / "kalan-promptlar.txt").exists():
+            file_path = (target_path / "kalan-promptlar.txt").resolve()
+        elif (target_path / "senaryo.md").exists():
+            file_path = (target_path / "senaryo.md").resolve()
+        else:
+            raise FileNotFoundError(f"kalan-promptlar.txt veya senaryo.md bulunamadi: {target_path}")
+    else:
+        file_path = target_path
+
+    video_dir = file_path.parent
+    base_dir = video_dir.parent.parent
     ref_rel, out_rel, scenes = parse_prompt_file(file_path)
 
-    ref_path = (base_dir / ref_rel).resolve() if ref_rel else None
-    out_dir = (base_dir / out_rel).resolve() if out_rel else (file_path.parent / "sahneler").resolve()
+    ref_path = resolve_reference_path(base_dir, video_dir, ref_rel)
+    if out_rel and (base_dir / out_rel).exists():
+        out_dir = (base_dir / out_rel).resolve()
+    else:
+        out_dir = (video_dir / "sahneler").resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     pending_scenes = []
@@ -191,10 +344,12 @@ async def run_batch(file_path_str: str):
         if not existing:
             pending_scenes.append((num, prompt))
 
-    print(f"Total scenes: {len(scenes)} | Pending scenes to generate: {len(pending_scenes)}")
+    print(f"Hedef klasor: {video_dir.name}")
+    print(f"Referans gorsel: {ref_path if ref_path else 'Yok'}")
+    print(f"Toplam sahne: {len(scenes)} | Uretilecek kalan sahne: {len(pending_scenes)}", flush=True)
 
     if not pending_scenes:
-        print("All scenes already generated.")
+        print("Tum sahneler zaten uretilmis.", flush=True)
         return
 
     launch_args = [
@@ -204,6 +359,8 @@ async def run_batch(file_path_str: str):
         "--disable-infobars",
         "--start-maximized"
     ]
+
+    failures = []
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -233,67 +390,76 @@ async def run_batch(file_path_str: str):
         await open_flow_project(page)
 
         for num, prompt in pending_scenes:
-            print(f"Generating Scene {num:02d}...")
+            print(f"[Sahne {num:02d}] Uretiliyor...", flush=True)
+            scene_done = False
 
             for attempt in range(1, 4):
                 try:
-                    initial_count = await page.evaluate("() => document.querySelectorAll('img[alt*=\"Option\"]').length")
+                    before_srcs = await get_settled_image_srcs(page)
 
                     if ref_path and ref_path.exists():
-                        print(f"Attaching reference: {ref_path.name}")
                         await attach_reference(page, ref_path)
 
                     await submit_prompt(page, prompt)
 
                     waited = 0
-                    success = False
-                    while waited < 90:
+                    new_srcs = []
+                    while waited < 120:
                         await asyncio.sleep(1.0)
                         waited += 1
 
                         if await handle_retry_if_present(page):
                             waited = 0
 
-                        current_count = await page.evaluate("() => document.querySelectorAll('img[alt*=\"Option\"]').length")
-                        if current_count > initial_count:
-                            success = True
+                        current_srcs = await get_rendered_image_srcs(page)
+                        new_srcs = [s for s in current_srcs if s not in before_srcs]
+                        if new_srcs:
                             break
 
-                    if not success:
-                        raise TimeoutError(f"Scene {num} timed out")
+                    if not new_srcs:
+                        raise TimeoutError(f"Sahne {num:02d} zaman asimina ugradi (120sn)")
 
-                    await asyncio.sleep(1.5)
+                    await asyncio.sleep(2.5)
+                    current_srcs = await get_rendered_image_srcs(page)
+                    final_new_srcs = list(dict.fromkeys([s for s in current_srcs if s not in before_srcs]))
+                    if not final_new_srcs:
+                        final_new_srcs = list(dict.fromkeys(new_srcs))
 
-                    new_opts = await page.query_selector_all('img[alt*="Option"]')
-                    if len(new_opts) >= 2:
-                        target_imgs = new_opts[-2:]
-                    elif len(new_opts) == 1:
-                        target_imgs = [new_opts[-1]]
-                    else:
-                        target_imgs = []
-
-                    for idx, img_el in enumerate(target_imgs, start=1):
+                    saved_count = 0
+                    for idx, src in enumerate(final_new_srcs[:2], start=1):
                         dest_file = out_dir / f"sahne_{num:02d}_{idx}.png"
-                        await save_rendered_image(page, img_el, dest_file)
-                        print(f"Saved: {dest_file.name}")
+                        if await save_image_by_src(page, context, src, dest_file):
+                            saved_count += 1
+                            print(f"  -> Kaydedildi: {dest_file.name}", flush=True)
+
+                    if saved_count == 0:
+                        raise RuntimeError(f"Sahne {num:02d} gorseli kaydedilemedi")
 
                     await stop_trailing_generation_if_active(page)
+                    scene_done = True
 
-                    delay = random.uniform(2.5, 4.0)
+                    delay = random.uniform(2.0, 3.5)
                     await asyncio.sleep(delay)
                     break
 
                 except Exception as e:
-                    print(f"Scene {num:02d} attempt {attempt} failed: {e}")
+                    print(f"[Sahne {num:02d}] Deneme {attempt} basarisiz: {e}", flush=True)
                     await handle_retry_if_present(page)
                     await stop_trailing_generation_if_active(page)
-                    await page.screenshot(path=str(out_dir / f"_error_{num:02d}.png"))
+                    try:
+                        await page.screenshot(path=str(out_dir / f"_error_{num:02d}.png"))
+                    except Exception:
+                        pass
                     await asyncio.sleep(2.0)
                     await open_flow_project(page)
 
+            if not scene_done:
+                failures.append(num)
+
+        (out_dir / "_hatalar.txt").write_text("\n".join(map(str, failures)), encoding="utf-8")
         await browser.close()
-        print("Batch processing completed.")
+        print(f"Tamamlandi. Basarisiz sahneler: {failures if failures else 'Yok'}", flush=True)
 
 if __name__ == "__main__":
-    target_file = sys.argv[1] if len(sys.argv) > 1 else r"C:\Users\yahowa\AppData\Local\Claude-Data\claude_pzs8sxrjxfjjc\scratch-workspaces\32a64456-85c9-45f5-8b4d-ee040224c3ac\a930890e-456b-4c02-a40d-d29cc3fddf62\scratch-2026-10-26-5e6450\videolar\01-raccoons-smarter\kalan-promptlar.txt"
-    asyncio.run(run_batch(target_file))
+    target_arg = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_TARGET
+    asyncio.run(run_batch(target_arg))
