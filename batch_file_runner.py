@@ -1,560 +1,343 @@
 import os
-import sys
 import re
+import sys
 import json
 import time
-import math
-import ctypes
 import base64
-import random
-import threading
+import argparse
+import subprocess
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
-import win32gui
-import win32con
 
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
-except Exception:
+PROMPT_RE = re.compile(
+    r"Prompt\s*\([^)]*\)\s*:\s*\n(.*?)(?=\n-{5,}|\n═{5,}|\Z)",
+    re.DOTALL
+)
+HEADER_RE = re.compile(r"SAHNE\s+(\d+)\s+—\s+([^\n]+)")
+
+
+def parse_prompts_file(filepath: str):
+    with open(filepath, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    scenes = []
+    simple_matches = list(re.finditer(r"===\s*SAHNE\s+(\d+)\s*===\s*\n(.*?)(?=\n===\s*SAHNE|\Z)", text, re.DOTALL))
+    if simple_matches:
+        for m in simple_matches:
+            num = int(m.group(1))
+            prompt = " ".join(m.group(2).strip().split())
+            if prompt:
+                scenes.append({
+                    "num": num,
+                    "title": f"Sahne {num}",
+                    "prompt": prompt
+                })
+        return scenes
+
+    blocks = re.split(r"═{10,}\s*\n(?=SAHNE\s+\d+)", text)
+    for block in blocks:
+        hm = HEADER_RE.search(block)
+        pm = PROMPT_RE.search(block)
+        if hm and pm:
+            num = int(hm.group(1))
+            title = hm.group(2).strip()
+            prompt = " ".join(pm.group(1).strip().split())
+            scenes.append({
+                "num": num,
+                "title": title,
+                "prompt": prompt
+            })
+    return scenes
+
+
+def resolve_ref_image(base_dir: str, ref_arg: str):
+    if not ref_arg:
+        return None
+    candidates = [
+        ref_arg,
+        os.path.join(base_dir, ref_arg),
+        os.path.join(base_dir, "..", ref_arg),
+        os.path.join(base_dir, "..", "..", ref_arg),
+    ]
+    for c in candidates:
+        full = os.path.abspath(c)
+        if os.path.isfile(full):
+            return full
+    return None
+
+
+def copy_to_clipboard(text: str):
     try:
-        ctypes.windll.user32.SetProcessDPIAware()
+        proc = subprocess.Popen(["clip"], stdin=subprocess.PIPE, shell=True)
+        proc.communicate(input=text.encode("utf-16-le"))
     except Exception:
         pass
 
-user32 = ctypes.windll.user32
-kernel32 = ctypes.windll.kernel32
 
-MOUSEEVENTF_LEFTDOWN = 0x0002
-MOUSEEVENTF_LEFTUP = 0x0004
-KEYEVENTF_KEYUP = 0x0002
-VK_CONTROL = 0x11
-VK_RETURN = 0x0D
-VK_BACK = 0x08
-VK_ESCAPE = 0x1B
-VK_A = 0x41
-VK_V = 0x56
+CONSOLE_LOADER = (
+    "fetch('http://127.0.0.1:8765/ tasks'.replace(' ',''))"
+    ".then(r=>r.json()).then(async cfg=>{"
+    "try{Object.defineProperty(document,'hidden',{get:()=>false,configurable:true});"
+    "Object.defineProperty(document,'visibilityState',{get:()=>'visible',configurable:true});"
+    "document.hasFocus=()=>true;"
+    "window.requestAnimationFrame=cb=>setTimeout(()=>cb(performance.now()),16);"
+    "const ac=new(window.AudioContext||window.webkitAudioContext)();const osc=ac.createOscillator();const g=ac.createGain();"
+    "g.gain.value=0.00001;osc.connect(g);g.connect(ac.destination);osc.start();}catch(e){}"
+    "try{const rb=await fetch('http://127.0.0.1:8765/ref-image').then(r=>r.blob());"
+    "window.__roccoFile=new File([rb],cfg.refName||'rocco_sheet_v2.png',{type:'image/png'});"
+    "const origClick=HTMLInputElement.prototype.click;"
+    "HTMLInputElement.prototype.click=function(){"
+    "if(this.type==='file'&&window.__roccoFile){"
+    "const dt=new DataTransfer();dt.items.add(window.__roccoFile);this.files=dt.files;"
+    "this.dispatchEvent(new Event('input',{bubbles:true}));"
+    "this.dispatchEvent(new Event('change',{bubbles:true}));return;}"
+    "return origClick.apply(this,arguments);};}catch(e){}"
+    "const sleep=ms=>new Promise(r=>setTimeout(r,ms));"
+    "const log=msg=>fetch('http://127.0.0.1:8765/log',{method:'POST',mode:'no-cors',body:JSON.stringify({msg})}).catch(()=>{});"
+    "const badge=document.createElement('div');"
+    "badge.style.cssText='position:fixed;bottom:16px;right:16px;z-index:999999;background:rgb(15,23,42);color:rgb(56,189,248);padding:12px 18px;border-radius:10px;font:600 13px sans-serif;box-shadow:0 8px 24px rgba(0,0,0,0.5);border:1px solid rgb(56,189,248);pointer-events:none;';"
+    "document.body.appendChild(badge);"
+    "const setStatus=t=>{badge.textContent=t;log(t);};"
+    "const getImgs=()=>Array.from(document.querySelectorAll('img[alt*=\"Option\"],img[src*=\"/asb/\"]')).filter(i=>i.complete&&i.naturalWidth>200&&i.src);"
+    "const attachRef=async()=>{"
+    "const refKey=(cfg.refName||'rocco_sheet').replace('.png','');"
+    "const addBtns=Array.from(document.querySelectorAll('button[aria-label*=\"İçerik öğelerini istem kutusuna ekle\"],button[aria-label*=\"Add content\"]')).filter(b=>b.offsetParent!==null);"
+    "if(!addBtns.length)return;"
+    "addBtns[addBtns.length-1].click();"
+    "await sleep(1300);"
+    "let overlay=document.querySelector('.cdk-overlay-container');"
+    "const findItem=()=>Array.from((overlay||document).querySelectorAll('.cdk-overlay-container button, .cdk-overlay-container [role=\"button\"], .cdk-overlay-container img')).find(el=>{"
+    "const t=((el.textContent||'')+' '+(el.getAttribute('aria-label')||'')+' '+(el.getAttribute('alt')||'')).toLowerCase();"
+    "return t.includes('rocco')||t.includes(refKey.toLowerCase())||t.includes('ref_');});"
+    "let item=findItem();"
+    "if(!item){"
+    "const inp=document.querySelector('.cdk-overlay-container input[placeholder*=\"Öğe\"], .cdk-overlay-container input[placeholder*=\"Search\"]');"
+    "if(inp){const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;"
+    "setter.call(inp,'rocco');inp.dispatchEvent(new Event('input',{bubbles:true}));await sleep(1200);item=findItem();}}"
+    "if(item){const btn=item.closest('button')||item;btn.click();await sleep(1000);"
+    "const conf=Array.from(document.querySelectorAll('.cdk-overlay-container button')).find(b=>(b.textContent||'').includes('İsteme ekle')||(b.textContent||'').includes('Add to prompt'));"
+    "if(conf){conf.click();await sleep(900);}"
+    "}else if(window.__roccoFile){"
+    "const upBtn=document.querySelector('.cdk-overlay-container button.upload-button, .cdk-overlay-container button[aria-label*=\"Medya yükle\"]');"
+    "if(upBtn){upBtn.click();await sleep(3500);"
+    "const acc=Array.from(document.querySelectorAll('button')).find(b=>(b.textContent||'').includes('Kabul ediyorum')||(b.textContent||'').includes('I agree'));"
+    "if(acc){acc.click();await sleep(1500);}"
+    "const conf=Array.from(document.querySelectorAll('.cdk-overlay-container button')).find(b=>(b.textContent||'').includes('İsteme ekle')||(b.textContent||'').includes('Add to prompt'));"
+    "if(conf){conf.click();await sleep(1000);}}}"
+    "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,bubbles:true}));"
+    "await sleep(400);};"
+    "setStatus('Baslatildi: '+cfg.scenes.length+' sahne uretilecek (PC serbest)');"
+    "for(let i=0;i<cfg.scenes.length;i++){"
+    "const s=cfg.scenes[i];"
+    "setStatus('Sahne '+s.num+' ('+(i+1)+'/'+cfg.scenes.length+') hazirlaniyor...');"
+    "for(let w=0;w<20;w++){"
+    "const stopBtn=Array.from(document.querySelectorAll('button[aria-label*=\"Durdur\"],button[aria-label*=\"Stop\"]')).find(b=>b.offsetParent!==null);"
+    "if(stopBtn){stopBtn.click();await sleep(1200);}else break;}"
+    "const ed=document.querySelector('div.ProseMirror');"
+    "if(!ed){setStatus('HATA: ProseMirror editor bulunamadi!');break;}"
+    "ed.focus();"
+    "const sel=window.getSelection();const rng=document.createRange();rng.selectNodeContents(ed);sel.removeAllRanges();sel.addRange(rng);"
+    "document.execCommand('delete',false,null);await sleep(300);"
+    "await attachRef();"
+    "ed.focus();"
+    "const sel2=window.getSelection();const rng2=document.createRange();rng2.selectNodeContents(ed);rng2.collapse(false);sel2.removeAllRanges();sel2.addRange(rng2);"
+    "const txt=' '+s.prompt;"
+    "let ok=document.execCommand('insertText',false,txt);"
+    "if(!ok||!(ed.innerText||'').includes(s.prompt.slice(0,20))){"
+    "const dt=new DataTransfer();dt.setData('text/plain',txt);"
+    "ed.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));}"
+    "await sleep(900);"
+    "const beforeSrcs=new Set(getImgs().map(im=>im.src));"
+    "const genBtns=Array.from(document.querySelectorAll('button[aria-label*=\"Oluşturmaya başla\"],button[aria-label*=\"Generate\"]')).filter(b=>b.offsetParent!==null);"
+    "if(genBtns.length){genBtns[genBtns.length-1].click();}"
+    "else{ed.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,bubbles:true}));}"
+    "await sleep(2200);"
+    "if((ed.innerText||'').trim().length>30&&genBtns.length){genBtns[genBtns.length-1].click();await sleep(1000);}"
+    "setStatus('Sahne '+s.num+' uretiliyor...');"
+    "let newImgs=[];let retries=0;"
+    "for(let t=0;t<90;t++){"
+    "await sleep(1500);"
+    "const cur=getImgs().filter(im=>!beforeSrcs.has(im.src));"
+    "if(cur.length>0){await sleep(2500);newImgs=getImgs().filter(im=>!beforeSrcs.has(im.src));break;}"
+    "const rBtn=Array.from(document.querySelectorAll('button')).find(b=>b.offsetParent!==null&&((b.textContent||'').trim()==='Tekrar dene'||(b.textContent||'').trim()==='Try again'));"
+    "if(rBtn){retries++;if(retries>2){setStatus('Sahne '+s.num+' bot/oran engeline takildi, 30sn bekleniyor...');await sleep(30000);retries=0;}"
+    "else{setStatus('Sahne '+s.num+' Tekrar dene bekleniyor (20sn)...');await sleep(20000);rBtn.click();t=0;}}}"
+    "if(!newImgs.length){setStatus('Sahne '+s.num+' zaman asimi, sonrakine geciliyor...');continue;}"
+    "for(let k=0;k<newImgs.length;k++){"
+    "try{const im=newImgs[k];const c=document.createElement('canvas');c.width=im.naturalWidth;c.height=im.naturalHeight;"
+    "c.getContext('2d').drawImage(im,0,0);const dataUrl=c.toDataURL('image/png');"
+    "await fetch('http://127.0.0.1:8765/save',{method:'POST',mode:'no-cors',body:JSON.stringify({scene:s.num,index:k+1,dataUrl})});"
+    "}catch(e){log('Kayit hatasi: '+e);}}"
+    "setStatus('Sahne '+s.num+' kaydedildi ('+newImgs.length+' gorsel)');"
+    "const waitMs=6500+Math.floor(Math.random()*3500);"
+    "await sleep(waitMs);}"
+    "setStatus('TUM SAHNELER TAMAMLANDI!');"
+    "fetch('http://127.0.0.1:8765/done',{method:'POST',mode:'no-cors',body:'{}'}).catch(()=>{});"
+    "});"
+)
 
-BRIDGE_PORT = 8765
-DOWNLOADS_DIR = Path.home() / "Downloads"
-DEFAULT_TARGET = r"C:\Users\yahowa\AppData\Local\Claude-Data\claude_pzs8sxrjxfjjc\scratch-workspaces\32a64456-85c9-45f5-8b4d-ee040224c3ac\a930890e-456b-4c02-a40d-d29cc3fddf62\scratch-2026-10-26-5e6450\videolar\03-humans-vanished\kalan-promptlar.txt"
 
-CONSOLE_JS = r"""(() => {
-  if (window.__flowHelperTimer) clearInterval(window.__flowHelperTimer);
-  window.__lastMouse = { x: 0, y: 0 };
-  window.addEventListener("mousemove", (e) => {
-    window.__lastMouse = { x: e.clientX, y: e.clientY };
-  }, { passive: true });
+class FlowBridgeServer:
+    def __init__(self, pending_scenes, out_dir: str, ref_path: str):
+        self.pending_scenes = pending_scenes
+        self.out_dir = out_dir
+        self.ref_path = ref_path
+        self.ref_name = os.path.basename(ref_path) if ref_path else "rocco_sheet_v2.png"
+        self.saved_scenes = set()
+        self.finished = False
 
-  const knownSrcs = new Set(
-    Array.from(document.querySelectorAll('img[src*="/asb/"], img[alt*="Option"]'))
-      .filter(i => i.complete && i.naturalWidth > 256 && i.src)
-      .map(i => i.src)
-  );
-  let imgCounter = 0;
-  const processingSrcs = new Set();
 
-  function isVis(el) {
-    if (!el) return false;
-    const r = el.getBoundingClientRect();
-    if (r.width <= 2 || r.height <= 2) return false;
-    const st = window.getComputedStyle(el);
-    return st.visibility !== "hidden" && st.display !== "none" && parseFloat(st.opacity || "1") > 0.05;
-  }
+def run_server(bridge: FlowBridgeServer, port: int):
+    class Handler(BaseHTTPRequestHandler):
+        def _cors(self):
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "*")
+            self.send_header("Access-Control-Allow-Private-Network", "true")
+            self.send_header("Cache-Control", "no-store")
 
-  function rectOf(el) {
-    if (!isVis(el)) return null;
-    const r = el.getBoundingClientRect();
-    return {
-      x: Math.round(r.left + r.width / 2),
-      y: Math.round(r.top + r.height / 2),
-      w: Math.round(r.width),
-      h: Math.round(r.height)
-    };
-  }
+        def do_OPTIONS(self):
+            self.send_response(200)
+            self._cors()
+            self.end_headers()
 
-  function findBtn(texts, rootSel) {
-    const root = rootSel ? document.querySelector(rootSel) : document;
-    if (!root) return null;
-    const els = Array.from(root.querySelectorAll("button, a, [role='button'], [role='option']"));
-    for (const t of texts) {
-      const low = t.toLowerCase();
-      for (const el of els) {
-        if (isVis(el) && (el.innerText || "").toLowerCase().includes(low)) return el;
-      }
-    }
-    return null;
-  }
+        def do_GET(self):
+            if self.path.startswith("/tasks"):
+                remaining = [
+                    s for s in bridge.pending_scenes
+                    if not os.path.exists(os.path.join(bridge.out_dir, f"sahne_{s['num']:02d}_1.png"))
+                ]
+                payload = json.dumps({
+                    "refName": bridge.ref_name,
+                    "scenes": remaining
+                }, ensure_ascii=False).encode("utf-8")
+                self.send_response(200)
+                self._cors()
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(payload)
+                print(f"\n[BAGLANDI] Tarayici {len(remaining)} sahnelik gorev listesini aldi (Arka planda calisiyor, PC'yi rahatca kullanabilirsiniz).")
+                return
 
-  function findLast(sel) {
-    const els = Array.from(document.querySelectorAll(sel)).filter(isVis);
-    return els.length ? els[els.length - 1] : null;
-  }
+            if self.path.startswith("/ref-image"):
+                if bridge.ref_path and os.path.exists(bridge.ref_path):
+                    with open(bridge.ref_path, "rb") as f:
+                        img_bytes = f.read()
+                    self.send_response(200)
+                    self._cors()
+                    self.send_header("Content-Type", "image/png")
+                    self.end_headers()
+                    self.wfile.write(img_bytes)
+                    return
+                self.send_response(404)
+                self._cors()
+                self.end_headers()
+                return
 
-  function findFirst(sel) {
-    const els = Array.from(document.querySelectorAll(sel)).filter(isVis);
-    return els.length ? els[0] : null;
-  }
+            self.send_response(200)
+            self._cors()
+            self.end_headers()
+            self.wfile.write(b"OK")
 
-  function exportImage(imgEl, idx) {
-    try {
-      const c = document.createElement("canvas");
-      c.width = imgEl.naturalWidth;
-      c.height = imgEl.naturalHeight;
-      c.getContext("2d").drawImage(imgEl, 0, 0);
-      const dataUrl = c.toDataURL("image/png");
-      fetch("http://127.0.0.1:8765/save-raw", {
-        method: "POST",
-        mode: "no-cors",
-        body: dataUrl
-      }).catch(() => {
-        const a = document.createElement("a");
-        a.href = dataUrl;
-        a.download = "flow_auto_img_" + idx + ".png";
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      });
-    } catch (e) {}
-  }
-
-  window.__flowHelperTimer = setInterval(() => {
-    const imgs = Array.from(document.querySelectorAll('img[src*="/asb/"], img[alt*="Option"]'))
-      .filter(i => i.complete && i.naturalWidth > 256 && i.src);
-
-    for (const img of imgs) {
-      if (!knownSrcs.has(img.src) && !processingSrcs.has(img.src)) {
-        processingSrcs.add(img.src);
-        setTimeout(() => {
-          knownSrcs.add(img.src);
-          imgCounter += 1;
-          exportImage(img, imgCounter);
-        }, 1200);
-      }
-    }
-
-    const ed = findFirst("div.ProseMirror");
-    const add = findLast('button[aria-label*="İçerik öğelerini istem kutusuna ekle"], button[aria-label*="Add content"]');
-    const srch = findFirst('input[placeholder="Öğe arayın"], input[placeholder*="Search"]');
-    const lib = findBtn(["rocco_sheet_v2.png", "rocco_sheet_v2", "rocco_sheet.png"], ".cdk-overlay-container");
-    const conf = findBtn(["İsteme ekle", "Add to prompt"], ".cdk-overlay-container") || findBtn(["İsteme ekle", "Add to prompt"]);
-    const gen = findLast('button[aria-label*="Oluşturmaya başla"], button[aria-label*="Generate"]');
-    const rtry = findBtn(["Tekrar dene", "Try again"]);
-
-    const st = {
-      mx: window.__lastMouse.x,
-      my: window.__lastMouse.y,
-      dpr: window.devicePixelRatio || 1,
-      ed: rectOf(ed),
-      edLen: ed ? (ed.innerText || "").trim().length : 0,
-      add: rectOf(add),
-      srch: rectOf(srch),
-      lib: rectOf(lib),
-      conf: rectOf(conf),
-      gen: rectOf(gen),
-      rtry: rectOf(rtry),
-      ic: imgCounter
-    };
-    document.title = "FLOW_STATE:" + JSON.stringify(st);
-  }, 250);
-  console.log("Flow Yardimcisi Aktif!");
-})();"""
-
-shared_lock = threading.Lock()
-received_images = []
-
-class RawImageHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        return
-
-    def do_POST(self):
-        length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(length).decode("utf-8", errors="ignore") if length > 0 else ""
-        if self.path == "/save-raw" and "," in raw:
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(length).decode("utf-8", errors="ignore")
             try:
-                b64_data = raw.split(",", 1)[1].strip()
-                img_bytes = base64.b64decode(b64_data)
-                with shared_lock:
-                    received_images.append(img_bytes)
+                data = json.loads(raw) if raw else {}
             except Exception:
-                pass
-        self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(b"ok")
+                data = {}
 
-def start_local_receiver():
-    try:
-        server = HTTPServer(("127.0.0.1", BRIDGE_PORT), RawImageHandler)
-        t = threading.Thread(target=server.serve_forever, daemon=True)
-        t.start()
-        return server
-    except Exception:
-        return None
+            if self.path.startswith("/log"):
+                msg = data.get("msg", "")
+                if msg:
+                    print(f"[FLOW] {msg}")
+            elif self.path.startswith("/save"):
+                scene_num = int(data.get("scene", 0))
+                idx = int(data.get("index", 1))
+                data_url = data.get("dataUrl", "")
+                if scene_num > 0 and data_url:
+                    b64 = data_url.split(",", 1)[1] if "," in data_url else data_url
+                    img_bytes = base64.b64decode(b64)
+                    filename = f"sahne_{scene_num:02d}_{idx}.png"
+                    filepath = os.path.join(bridge.out_dir, filename)
+                    with open(filepath, "wb") as f:
+                        f.write(img_bytes)
+                    kb = len(img_bytes) // 1024
+                    bridge.saved_scenes.add(scene_num)
+                    print(f"  [KAYDEDILDI] {filename} ({kb} KB) -> {filepath}")
+            elif self.path.startswith("/done"):
+                print("\n[TAMAMLANDI] Tum sahneler uretildi ve kaydedildi!")
+                bridge.finished = True
 
-class POINT(ctypes.Structure):
-    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+            self.send_response(200)
+            self._cors()
+            self.end_headers()
+            self.wfile.write(b"OK")
 
-def get_cursor_pos() -> tuple[int, int]:
-    pt = POINT()
-    user32.GetCursorPos(ctypes.byref(pt))
-    return pt.x, pt.y
+        def log_message(self, format, *args):
+            return
 
-def move_os_mouse(target_x: int, target_y: int, duration: float = 0.38):
-    start_x, start_y = get_cursor_pos()
-    dist = math.hypot(target_x - start_x, target_y - start_y)
-    steps = max(18, min(65, int(dist / 11)))
-    ctrl_x = (start_x + target_x) / 2.0 + random.uniform(-45, 45)
-    ctrl_y = (start_y + target_y) / 2.0 + random.uniform(-45, 45)
-    step_sleep = duration / steps
-    for i in range(1, steps + 1):
-        t = i / steps
-        inv = 1.0 - t
-        bx = inv * inv * start_x + 2 * inv * t * ctrl_x + t * t * target_x
-        by = inv * inv * start_y + 2 * inv * t * ctrl_y + t * t * target_y
-        user32.SetCursorPos(int(bx), int(by))
-        time.sleep(step_sleep)
-    user32.SetCursorPos(int(target_x), int(target_y))
-
-def os_left_click(x: int, y: int):
-    move_os_mouse(x, y, duration=random.uniform(0.32, 0.50))
-    time.sleep(random.uniform(0.08, 0.16))
-    user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(random.uniform(0.05, 0.11))
-    user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-
-def set_clipboard_text(text: str):
-    CF_UNICODETEXT = 13
-    GMEM_MOVEABLE = 0x0002
-    kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
-    kernel32.GlobalAlloc.restype = ctypes.c_void_p
-    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
-    kernel32.GlobalLock.restype = ctypes.c_void_p
-    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
-    user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
-
-    encoded = (text + "\0").encode("utf-16-le")
-    for _ in range(5):
-        if user32.OpenClipboard(0):
+    server = HTTPServer(("127.0.0.1", port), Handler)
+    server.timeout = 1.0
+    while not bridge.finished:
+        remaining = [
+            s for s in bridge.pending_scenes
+            if not os.path.exists(os.path.join(bridge.out_dir, f"sahne_{s['num']:02d}_1.png"))
+        ]
+        if not remaining:
+            print("\n[TAMAMLANDI] Listedeki tum sahneler sahneler/ klasorune kaydedildi!")
             break
-        time.sleep(0.05)
-    user32.EmptyClipboard()
-    h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(encoded))
-    ptr = kernel32.GlobalLock(h_mem)
-    ctypes.memmove(ptr, encoded, len(encoded))
-    kernel32.GlobalUnlock(h_mem)
-    user32.SetClipboardData(CF_UNICODETEXT, h_mem)
-    user32.CloseClipboard()
+        server.handle_request()
 
-def press_vk(vk: int):
-    user32.keybd_event(vk, 0, 0, 0)
-    time.sleep(random.uniform(0.04, 0.08))
-    user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
 
-def press_ctrl_combo(vk: int):
-    user32.keybd_event(VK_CONTROL, 0, 0, 0)
-    time.sleep(random.uniform(0.04, 0.08))
-    user32.keybd_event(vk, 0, 0, 0)
-    time.sleep(random.uniform(0.04, 0.08))
-    user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
-    time.sleep(random.uniform(0.03, 0.06))
-    user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("prompts_file")
+    parser.add_argument("--ref", default="_marka/rocco_sheet_v2.png")
+    parser.add_argument("--out", default="sahneler")
+    parser.add_argument("--port", type=int, default=8765)
+    args = parser.parse_args()
 
-def find_flow_window() -> tuple[int | None, dict | None]:
-    found = []
-    def enum_cb(hwnd, _):
-        if win32gui.IsWindowVisible(hwnd):
-            title = win32gui.GetWindowText(hwnd) or ""
-            if "FLOW_STATE:" in title:
-                raw_json = title.split("FLOW_STATE:", 1)[1]
-                idx = raw_json.rfind("}")
-                if idx != -1:
-                    raw_json = raw_json[:idx + 1]
-                try:
-                    st = json.loads(raw_json)
-                    found.append((hwnd, st))
-                except Exception:
-                    pass
-    win32gui.EnumWindows(enum_cb, None)
-    return found[0] if found else (None, None)
+    prompts_path = os.path.abspath(args.prompts_file)
+    if not os.path.exists(prompts_path):
+        print(f"Dosya bulunamadi: {prompts_path}")
+        sys.exit(1)
 
-def read_flow_state() -> dict:
-    _, st = find_flow_window()
-    return st or {}
+    base_dir = os.path.dirname(prompts_path)
+    out_dir = args.out if os.path.isabs(args.out) else os.path.join(base_dir, args.out)
+    os.makedirs(out_dir, exist_ok=True)
 
-def focus_flow_window():
-    hwnd, _ = find_flow_window()
-    if hwnd:
-        try:
-            if win32gui.IsIconic(hwnd):
-                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            user32.keybd_event(0x12, 0, 0, 0)
-            user32.keybd_event(0x12, 0, KEYEVENTF_KEYUP, 0)
-            win32gui.SetForegroundWindow(hwnd)
-        except Exception:
-            pass
+    ref_path = resolve_ref_image(base_dir, args.ref)
+    scenes = parse_prompts_file(prompts_path)
 
-class ScreenMapper:
-    def __init__(self):
-        self.scale_x = 1.0
-        self.scale_y = 1.0
-        self.origin_x = 0.0
-        self.origin_y = 100.0
-
-    def calibrate(self):
-        focus_flow_window()
-        time.sleep(0.3)
-        p1x, p1y = 500, 450
-        move_os_mouse(p1x, p1y, duration=0.25)
-        time.sleep(0.4)
-        st1 = read_flow_state()
-        c1x, c1y = st1.get("mx", 0), st1.get("my", 0)
-
-        p2x, p2y = 900, 650
-        move_os_mouse(p2x, p2y, duration=0.25)
-        time.sleep(0.4)
-        st2 = read_flow_state()
-        c2x, c2y = st2.get("mx", 0), st2.get("my", 0)
-
-        if abs(c2x - c1x) > 40 and abs(c2y - c1y) > 40:
-            self.scale_x = (p2x - p1x) / float(c2x - c1x)
-            self.scale_y = (p2y - p1y) / float(c2y - c1y)
-            self.origin_x = p1x - c1x * self.scale_x
-            self.origin_y = p1y - c1y * self.scale_y
+    pending = []
+    for s in scenes:
+        out_file = os.path.join(out_dir, f"sahne_{s['num']:02d}_1.png")
+        if os.path.exists(out_file) and os.path.getsize(out_file) > 10000:
+            print(f"[ATLANDI] Sahne {s['num']:02d} zaten var: {out_file}")
         else:
-            dpr = float(st2.get("dpr") or 1.0)
-            self.scale_x = dpr
-            self.scale_y = dpr
-            self.origin_x = 0.0
-            self.origin_y = 85.0 * dpr
+            pending.append(s)
 
-    def click_box(self, box: dict):
-        focus_flow_window()
-        jx = box["x"] + random.uniform(-min(10, box["w"] * 0.2), min(10, box["w"] * 0.2))
-        jy = box["y"] + random.uniform(-min(5, box["h"] * 0.2), min(5, box["h"] * 0.2))
-        sx = int(self.origin_x + jx * self.scale_x)
-        sy = int(self.origin_y + jy * self.scale_y)
-        os_left_click(sx, sy)
-
-def parse_prompt_file(file_path: Path):
-    content = file_path.read_text(encoding="utf-8")
-    header_part = content.split("=== SAHNE")[0]
-    ref_match = re.search(r"([a-zA-Z0-9_./\\-]+\.png)", header_part)
-    ref_file_rel = ref_match.group(1).strip() if ref_match else "rocco_sheet_v2.png"
-
-    scenes = []
-    pattern = r"=== SAHNE\s+(\d+)\s*===\s*\n(.*?)(?=\n=== SAHNE|\Z)"
-    for m in re.finditer(pattern, content, re.DOTALL):
-        scene_num = int(m.group(1))
-        prompt_text = m.group(2).strip()
-        scenes.append((scene_num, prompt_text))
-
-    return ref_file_rel, scenes
-
-def attach_reference_from_library(mapper: ScreenMapper, ref_stem: str):
-    st = read_flow_state()
-    if not st.get("add"):
+    if not pending:
+        print("Uretilecek kalan sahne yok, hepsi tamamlanmis!")
         return
 
-    mapper.click_box(st["add"])
-    time.sleep(random.uniform(1.2, 1.6))
+    copy_to_clipboard(CONSOLE_LOADER)
 
-    st = read_flow_state()
-    if st.get("srch"):
-        mapper.click_box(st["srch"])
-        time.sleep(0.3)
-        press_ctrl_combo(VK_A)
-        time.sleep(0.1)
-        press_vk(VK_BACK)
-        time.sleep(0.2)
-        set_clipboard_text(ref_stem)
-        press_ctrl_combo(VK_V)
-        time.sleep(1.6)
+    print("=" * 72)
+    print(f"TOPLAM {len(pending)} SAHNE URETILECEK (Sahne {pending[0]['num']} -> Sahne {pending[-1]['num']})")
+    print(f"Cikti klasoru : {out_dir}")
+    print(f"Referans      : {ref_path}")
+    print("=" * 72)
+    print("FARE / KLAVYE / EKRAN ODAK MUDehalesi YOKTUR — PC'nizi normal kullanabilirsiniz!")
+    print("")
+    print("Sadece 1 kez normal Chrome'daki Flow sekmesinde F12 -> Console kismina")
+    print("Ctrl+V yapip Enter'a basin (kod su an panonuza kopyalandi).")
+    print("Sonrasinda baska sekmeye/uygulamaya gecebilirsiniz, arka planda uretip kaydeder.")
+    print("=" * 72)
 
-    st = read_flow_state()
-    if st.get("lib"):
-        mapper.click_box(st["lib"])
-        time.sleep(1.3)
-        st = read_flow_state()
-        if st.get("conf"):
-            mapper.click_box(st["conf"])
-            time.sleep(1.4)
-    else:
-        press_vk(VK_ESCAPE)
-        time.sleep(0.5)
+    bridge = FlowBridgeServer(pending, out_dir, ref_path)
+    run_server(bridge, args.port)
 
-def submit_prompt_hardware(mapper: ScreenMapper, prompt: str):
-    st = read_flow_state()
-    if not st.get("ed"):
-        raise RuntimeError("Flow prompt kutusu gorunmuyor")
-
-    mapper.click_box(st["ed"])
-    time.sleep(random.uniform(0.25, 0.45))
-    press_ctrl_combo(VK_A)
-    time.sleep(0.15)
-    press_vk(VK_BACK)
-    time.sleep(0.25)
-
-    set_clipboard_text(prompt)
-    press_ctrl_combo(VK_V)
-    time.sleep(random.uniform(1.1, 1.7))
-
-    st = read_flow_state()
-    if st.get("gen"):
-        mapper.click_box(st["gen"])
-    else:
-        press_vk(VK_RETURN)
-
-    time.sleep(2.0)
-    st = read_flow_state()
-    if st.get("edLen", 0) > 5:
-        if st.get("gen"):
-            mapper.click_box(st["gen"])
-        else:
-            press_vk(VK_RETURN)
-        time.sleep(1.5)
-
-def collect_saved_images(out_dir: Path, scene_num: int) -> int:
-    saved = 0
-    with shared_lock:
-        while received_images and saved < 2:
-            img_bytes = received_images.pop(0)
-            saved += 1
-            dest = out_dir / f"sahne_{scene_num:02d}_{saved}.png"
-            dest.write_bytes(img_bytes)
-            print(f"  -> Kaydedildi: {dest.name}", flush=True)
-
-    if saved == 0 and DOWNLOADS_DIR.exists():
-        dl_files = sorted(DOWNLOADS_DIR.glob("flow_auto_img_*.png"), key=lambda p: p.stat().st_mtime)
-        for f in dl_files[-2:]:
-            saved += 1
-            dest = out_dir / f"sahne_{scene_num:02d}_{saved}.png"
-            dest.write_bytes(f.read_bytes())
-            try:
-                f.unlink()
-            except Exception:
-                pass
-            print(f"  -> Kaydedildi: {dest.name}", flush=True)
-
-    return saved
-
-def run_batch(target_str: str):
-    target_path = Path(target_str).resolve()
-    if target_path.is_dir():
-        file_path = (target_path / "kalan-promptlar.txt").resolve()
-    else:
-        file_path = target_path
-
-    video_dir = file_path.parent
-    ref_rel, scenes = parse_prompt_file(file_path)
-    ref_stem = Path(ref_rel).stem
-
-    out_dir = (video_dir / "sahneler").resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    konsol_txt = video_dir / "konsol_kodu.txt"
-    konsol_txt.write_text(CONSOLE_JS, encoding="utf-8")
-
-    pending_scenes = []
-    for num, prompt in scenes:
-        if not list(out_dir.glob(f"sahne_{num:02d}_*.png")):
-            pending_scenes.append((num, prompt))
-
-    print(f"Hedef klasor: {video_dir.name}")
-    print(f"Referans: {ref_rel} | Uretilecek kalan sahne: {len(pending_scenes)}", flush=True)
-
-    if not pending_scenes:
-        print("Tum sahneler zaten uretilmis.", flush=True)
-        return
-
-    start_local_receiver()
-    set_clipboard_text(CONSOLE_JS)
-
-    print("\n" + "=" * 68)
-    print("  SIFIR BOT ALGILAMA MODU (Kendi Normal Chrome Tarayiciniz)")
-    print("=" * 68)
-    print("1. Normal Chrome tarayicinizda Google Flow projenizi acin.")
-    print("2. F12 tusuna basip 'Console' sekmesine gecin.")
-    print("3. Konsol kodu su an panonuza (Clipboard) OTO-KOPYALANDI!")
-    print("   Console'a tiklayip Ctrl+V yapin ve Enter'a basin.")
-    print("4. Ardindan F12 panelini kapatin ve fareyi birakin.")
-    print("=" * 68 + "\n", flush=True)
-
-    print("Chrome'da F12 -> Console'a kodu yapistirmaniz bekleniyor...", flush=True)
-    while True:
-        hwnd, st = find_flow_window()
-        if hwnd and st:
-            print("Baglanti kuruldu! Fare kalibre ediliyor (lutfen fareyi oynatmayin)...", flush=True)
-            break
-        time.sleep(0.5)
-
-    time.sleep(1.5)
-    mapper = ScreenMapper()
-    mapper.calibrate()
-
-    failures = []
-    for num, prompt in pending_scenes:
-        print(f"[Sahne {num:02d}] Uretiliyor...", flush=True)
-        scene_done = False
-
-        for attempt in range(1, 3):
-            try:
-                with shared_lock:
-                    received_images.clear()
-
-                before_ic = read_flow_state().get("ic", 0)
-
-                attach_reference_from_library(mapper, ref_stem)
-                submit_prompt_hardware(mapper, prompt)
-
-                waited = 0
-                detected = False
-                while waited < 120:
-                    time.sleep(1.0)
-                    waited += 1
-
-                    if waited % 15 == 0:
-                        move_os_mouse(random.randint(350, 850), random.randint(250, 550), duration=0.35)
-
-                    st = read_flow_state()
-                    if st.get("rtry"):
-                        time.sleep(random.uniform(3.5, 5.5))
-                        st = read_flow_state()
-                        if st.get("rtry"):
-                            mapper.click_box(st["rtry"])
-                            waited = 0
-                            time.sleep(3.0)
-
-                    with shared_lock:
-                        has_http_img = len(received_images) > 0
-
-                    if has_http_img or st.get("ic", 0) > before_ic:
-                        detected = True
-                        break
-
-                if not detected:
-                    raise TimeoutError(f"Sahne {num:02d} zaman asimina ugradi (120sn)")
-
-                time.sleep(3.5)
-                saved = collect_saved_images(out_dir, num)
-                if saved == 0:
-                    raise RuntimeError(f"Sahne {num:02d} gorseli alinamadi")
-
-                scene_done = True
-                time.sleep(random.uniform(5.0, 8.0))
-                break
-
-            except Exception as e:
-                print(f"[Sahne {num:02d}] Deneme {attempt} basarisiz: {e}", flush=True)
-                press_vk(VK_ESCAPE)
-                time.sleep(2.5)
-                mapper.calibrate()
-
-        if not scene_done:
-            failures.append(num)
-
-    (out_dir / "_hatalar.txt").write_text("\n".join(map(str, failures)), encoding="utf-8")
-    print(f"Tamamlandi! Basarisiz sahneler: {failures if failures else 'Yok'}", flush=True)
 
 if __name__ == "__main__":
-    target_arg = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_TARGET
-    run_batch(target_arg)
+    main()
