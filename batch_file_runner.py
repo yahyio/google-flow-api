@@ -11,6 +11,8 @@ import asyncio
 import subprocess
 import urllib.request
 import websockets
+import win32gui
+import win32con
 from pathlib import Path
 
 try:
@@ -111,7 +113,7 @@ STATE_JS = r"""
   const acceptBtn = findBtnByText(["Kabul ediyorum", "I agree", "Anladım", "Got it"]);
   const genBtn = findLastVisible('button[aria-label*="Oluşturmaya başla"], button[aria-label*="Generate"]');
   const retryBtn = findBtnByText(["Tekrar dene", "Try again"]);
-  const projectLink = findFirstVisible('a[href*="/project/"]');
+  const projectLinkEl = findFirstVisible('a[href*="/project/"]');
   const newProjectBtn = findBtnByText(["Yeni proje", "New project"]);
   const ctaBtn = findBtnByText(["Google Flow ile oluştur", "Google Flow'u deneyin", "Try Google Flow"]);
 
@@ -134,13 +136,30 @@ STATE_JS = r"""
     acceptBtn: rectOf(acceptBtn),
     genBtn: rectOf(genBtn),
     retryBtn: rectOf(retryBtn),
-    projectLink: rectOf(projectLink),
+    projectLink: rectOf(projectLinkEl),
+    projectHref: projectLinkEl ? projectLinkEl.href : null,
     newProjectBtn: rectOf(newProjectBtn),
     ctaBtn: rectOf(ctaBtn),
     imageSrcs: imgs
   };
 })()
 """
+
+def bring_chrome_to_front():
+    def enum_cb(hwnd, results):
+        if win32gui.IsWindowVisible(hwnd):
+            title = win32gui.GetWindowText(hwnd) or ""
+            if "Flow" in title or "Google Chrome" in title or "about:blank" in title:
+                results.append(hwnd)
+    hwnds = []
+    win32gui.EnumWindows(enum_cb, hwnds)
+    for hwnd in hwnds:
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
+            win32gui.SetForegroundWindow(hwnd)
+            break
+        except Exception:
+            pass
 
 class POINT(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
@@ -274,6 +293,8 @@ class ScreenMapper:
         self.origin_y = 100.0
 
     async def calibrate(self):
+        bring_chrome_to_front()
+        await asyncio.sleep(0.3)
         await self.cdp.get_state()
         p1x, p1y = 500, 450
         move_os_mouse(p1x, p1y, duration=0.25)
@@ -309,6 +330,7 @@ class ScreenMapper:
         return sx, sy
 
     def click_box(self, box: dict):
+        bring_chrome_to_front()
         sx, sy = self.to_screen(box)
         os_left_click(sx, sy)
 
@@ -338,7 +360,7 @@ def launch_chrome() -> subprocess.Popen | None:
             "--no-first-run",
             "--no-default-browser-check",
             "--start-maximized",
-            FLOW_URL
+            "about:blank"
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
@@ -395,7 +417,7 @@ def resolve_reference_path(base_dir: Path, video_dir: Path, ref_rel: str | None)
     return None
 
 async def ensure_in_editor(cdp: RawCDPClient, mapper: ScreenMapper) -> bool:
-    for _ in range(40):
+    for _ in range(45):
         st = await cdp.get_state()
         if st.get("editor"):
             return True
@@ -403,12 +425,12 @@ async def ensure_in_editor(cdp: RawCDPClient, mapper: ScreenMapper) -> bool:
             mapper.click_box(st["acceptBtn"])
             await asyncio.sleep(1.5)
             continue
+        if st.get("projectHref"):
+            await cdp.send_cmd("Page.navigate", {"url": st["projectHref"]})
+            await asyncio.sleep(4.0)
+            continue
         if st.get("ctaBtn"):
             mapper.click_box(st["ctaBtn"])
-            await asyncio.sleep(3.0)
-            continue
-        if st.get("projectLink"):
-            mapper.click_box(st["projectLink"])
             await asyncio.sleep(3.5)
             continue
         if st.get("newProjectBtn"):
@@ -564,12 +586,8 @@ async def run_batch(target_str: str):
         except Exception:
             pass
 
-    st = await cdp.get_state()
-    if "flow.google.com" not in st.get("url", "") and "labs.google" not in st.get("url", ""):
-        await cdp.send_cmd("Page.navigate", {"url": FLOW_URL})
-        await asyncio.sleep(4.0)
-    else:
-        await asyncio.sleep(2.5)
+    await cdp.send_cmd("Page.navigate", {"url": FLOW_URL})
+    await asyncio.sleep(4.5)
 
     mapper = ScreenMapper(cdp)
     await mapper.calibrate()
