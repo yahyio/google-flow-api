@@ -4,37 +4,13 @@ import re
 import json
 import time
 import math
-import ctypes
 import base64
 import random
 import asyncio
 import subprocess
 import urllib.request
 import websockets
-import win32gui
-import win32con
 from pathlib import Path
-
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
-except Exception:
-    try:
-        ctypes.windll.user32.SetProcessDPIAware()
-    except Exception:
-        pass
-
-user32 = ctypes.windll.user32
-kernel32 = ctypes.windll.kernel32
-
-MOUSEEVENTF_LEFTDOWN = 0x0002
-MOUSEEVENTF_LEFTUP = 0x0004
-KEYEVENTF_KEYUP = 0x0002
-VK_CONTROL = 0x11
-VK_RETURN = 0x0D
-VK_BACK = 0x08
-VK_ESCAPE = 0x1B
-VK_A = 0x41
-VK_V = 0x56
 
 SESSION_PATH = Path(r"C:\Users\yahowa\Desktop\reverseinstafly\google-flow-api\auth\session.json")
 PROFILE_DIR = Path(r"C:\Users\yahowa\Desktop\reverseinstafly\google-flow-api\auth\chrome_human_profile")
@@ -59,13 +35,6 @@ WORLD_V2 = (
 
 STATE_JS = r"""
 (() => {
-  if (!window.__mouseTrackerInstalled) {
-    window.__mouseTrackerInstalled = true;
-    window.__lastMouse = { clientX: 0, clientY: 0, screenX: 0, screenY: 0 };
-    window.addEventListener("mousemove", (e) => {
-      window.__lastMouse = { clientX: e.clientX, clientY: e.clientY, screenX: e.screenX, screenY: e.screenY };
-    }, { passive: true });
-  }
   function isVis(el) {
     if (!el) return false;
     const r = el.getBoundingClientRect();
@@ -86,7 +55,7 @@ STATE_JS = r"""
   function findBtnByText(texts, containerSel) {
     const root = containerSel ? document.querySelector(containerSel) : document;
     if (!root) return null;
-    const btns = Array.from(root.querySelectorAll("button, a[role='button']"));
+    const btns = Array.from(root.querySelectorAll("button, a, [role='button'], [role='option']"));
     for (const t of texts) {
       const low = t.toLowerCase();
       for (const b of btns) {
@@ -123,8 +92,6 @@ STATE_JS = r"""
 
   return {
     url: window.location.href,
-    dpr: window.devicePixelRatio || 1,
-    mouse: window.__lastMouse,
     editor: rectOf(editor),
     editorText: editor ? (editor.innerText || "").trim() : "",
     addBtn: rectOf(addBtn),
@@ -145,95 +112,13 @@ STATE_JS = r"""
 })()
 """
 
-def bring_chrome_to_front():
-    def enum_cb(hwnd, results):
-        if win32gui.IsWindowVisible(hwnd):
-            title = win32gui.GetWindowText(hwnd) or ""
-            if "Flow" in title or "Google Chrome" in title or "about:blank" in title:
-                results.append(hwnd)
-    hwnds = []
-    win32gui.EnumWindows(enum_cb, hwnds)
-    for hwnd in hwnds:
-        try:
-            win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
-            win32gui.SetForegroundWindow(hwnd)
-            break
-        except Exception:
-            pass
-
-class POINT(ctypes.Structure):
-    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-
-def get_cursor_pos() -> tuple[int, int]:
-    pt = POINT()
-    user32.GetCursorPos(ctypes.byref(pt))
-    return pt.x, pt.y
-
-def move_os_mouse(target_x: int, target_y: int, duration: float = 0.36):
-    start_x, start_y = get_cursor_pos()
-    dist = math.hypot(target_x - start_x, target_y - start_y)
-    steps = max(16, min(60, int(dist / 12)))
-    ctrl_x = (start_x + target_x) / 2.0 + random.uniform(-40, 40)
-    ctrl_y = (start_y + target_y) / 2.0 + random.uniform(-40, 40)
-    step_sleep = duration / steps
-    for i in range(1, steps + 1):
-        t = i / steps
-        inv = 1.0 - t
-        bx = inv * inv * start_x + 2 * inv * t * ctrl_x + t * t * target_x
-        by = inv * inv * start_y + 2 * inv * t * ctrl_y + t * t * target_y
-        user32.SetCursorPos(int(bx), int(by))
-        time.sleep(step_sleep)
-    user32.SetCursorPos(int(target_x), int(target_y))
-
-def os_left_click(x: int, y: int):
-    move_os_mouse(x, y, duration=random.uniform(0.30, 0.48))
-    time.sleep(random.uniform(0.08, 0.16))
-    user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(random.uniform(0.05, 0.10))
-    user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-
-def set_clipboard_text(text: str):
-    CF_UNICODETEXT = 13
-    GMEM_MOVEABLE = 0x0002
-    kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
-    kernel32.GlobalAlloc.restype = ctypes.c_void_p
-    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
-    kernel32.GlobalLock.restype = ctypes.c_void_p
-    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
-    user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
-
-    encoded = (text + "\0").encode("utf-16-le")
-    for _ in range(5):
-        if user32.OpenClipboard(0):
-            break
-        time.sleep(0.05)
-    user32.EmptyClipboard()
-    h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(encoded))
-    ptr = kernel32.GlobalLock(h_mem)
-    ctypes.memmove(ptr, encoded, len(encoded))
-    kernel32.GlobalUnlock(h_mem)
-    user32.SetClipboardData(CF_UNICODETEXT, h_mem)
-    user32.CloseClipboard()
-
-def press_vk(vk: int):
-    user32.keybd_event(vk, 0, 0, 0)
-    time.sleep(random.uniform(0.04, 0.08))
-    user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
-
-def press_ctrl_combo(vk: int):
-    user32.keybd_event(VK_CONTROL, 0, 0, 0)
-    time.sleep(random.uniform(0.04, 0.08))
-    user32.keybd_event(vk, 0, 0, 0)
-    time.sleep(random.uniform(0.04, 0.08))
-    user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
-    time.sleep(random.uniform(0.03, 0.06))
-    user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
-
 class RawCDPClient:
     def __init__(self, ws_url: str):
         self.ws_url = ws_url
         self.ws = None
         self.msg_id = 0
+        self.mouse_x = 400.0
+        self.mouse_y = 400.0
 
     async def connect(self):
         self.ws = await websockets.connect(self.ws_url, max_size=50 * 1024 * 1024)
@@ -262,6 +147,113 @@ class RawCDPClient:
         val = await self.eval_js(STATE_JS)
         return val if isinstance(val, dict) else {}
 
+    async def human_move(self, target_x: float, target_y: float, duration: float = 0.35):
+        start_x, start_y = self.mouse_x, self.mouse_y
+        dist = math.hypot(target_x - start_x, target_y - start_y)
+        steps = max(14, min(40, int(dist / 15)))
+        ctrl_x = (start_x + target_x) / 2.0 + random.uniform(-35, 35)
+        ctrl_y = (start_y + target_y) / 2.0 + random.uniform(-35, 35)
+        step_sleep = duration / steps
+        for i in range(1, steps + 1):
+            t = i / steps
+            inv = 1.0 - t
+            bx = inv * inv * start_x + 2 * inv * t * ctrl_x + t * t * target_x
+            by = inv * inv * start_y + 2 * inv * t * ctrl_y + t * t * target_y
+            await self.send_cmd("Input.dispatchMouseEvent", {
+                "type": "mouseMoved",
+                "x": round(bx, 1),
+                "y": round(by, 1),
+                "button": "none",
+                "pointerType": "mouse"
+            })
+            await asyncio.sleep(step_sleep)
+        self.mouse_x, self.mouse_y = target_x, target_y
+
+    async def human_click_box(self, box: dict):
+        tx = box["x"] + random.uniform(-min(10, box["w"] * 0.2), min(10, box["w"] * 0.2))
+        ty = box["y"] + random.uniform(-min(5, box["h"] * 0.2), min(5, box["h"] * 0.2))
+        await self.human_move(tx, ty, duration=random.uniform(0.28, 0.45))
+        await asyncio.sleep(random.uniform(0.06, 0.14))
+        await self.send_cmd("Input.dispatchMouseEvent", {
+            "type": "mousePressed",
+            "x": round(tx, 1),
+            "y": round(ty, 1),
+            "button": "left",
+            "buttons": 1,
+            "clickCount": 1,
+            "pointerType": "mouse"
+        })
+        await asyncio.sleep(random.uniform(0.05, 0.11))
+        await self.send_cmd("Input.dispatchMouseEvent", {
+            "type": "mouseReleased",
+            "x": round(tx, 1),
+            "y": round(ty, 1),
+            "button": "left",
+            "buttons": 0,
+            "clickCount": 1,
+            "pointerType": "mouse"
+        })
+
+    async def press_key(self, key: str, code: str, vk: int, modifiers: int = 0):
+        await self.send_cmd("Input.dispatchKeyEvent", {
+            "type": "rawKeyDown",
+            "key": key,
+            "code": code,
+            "windowsVirtualKeyCode": vk,
+            "nativeVirtualKeyCode": vk,
+            "modifiers": modifiers
+        })
+        await asyncio.sleep(random.uniform(0.04, 0.08))
+        await self.send_cmd("Input.dispatchKeyEvent", {
+            "type": "keyUp",
+            "key": key,
+            "code": code,
+            "windowsVirtualKeyCode": vk,
+            "nativeVirtualKeyCode": vk,
+            "modifiers": modifiers
+        })
+
+    async def clear_and_paste(self, text: str):
+        await self.press_key("a", "KeyA", 65, modifiers=2)
+        await asyncio.sleep(0.1)
+        await self.press_key("Backspace", "Backspace", 8)
+        await asyncio.sleep(0.15)
+        if len(text) > 1:
+            await self.send_cmd("Input.insertText", {"text": text[:-1]})
+            await asyncio.sleep(random.uniform(0.15, 0.3))
+            last_ch = text[-1]
+            await self.send_cmd("Input.dispatchKeyEvent", {
+                "type": "keyDown",
+                "text": last_ch,
+                "unmodifiedText": last_ch,
+                "key": last_ch
+            })
+            await asyncio.sleep(0.05)
+            await self.send_cmd("Input.dispatchKeyEvent", {
+                "type": "keyUp",
+                "key": last_ch
+            })
+        else:
+            await self.send_cmd("Input.insertText", {"text": text})
+
+    async def upload_file_to_input(self, file_path: Path) -> bool:
+        doc = await self.send_cmd("DOM.getDocument", {"depth": -1})
+        root_id = (doc.get("root") or {}).get("nodeId")
+        if not root_id:
+            return False
+        q = await self.send_cmd("DOM.querySelector", {
+            "nodeId": root_id,
+            "selector": 'input[type="file"]'
+        })
+        node_id = q.get("nodeId")
+        if not node_id:
+            return False
+        await self.send_cmd("DOM.setFileInputFiles", {
+            "nodeId": node_id,
+            "files": [str(file_path)]
+        })
+        return True
+
     async def extract_image_bytes(self, target_src: str) -> bytes | None:
         js = f"""
         (() => {{
@@ -283,56 +275,6 @@ class RawCDPClient:
     async def close(self):
         if self.ws:
             await self.ws.close()
-
-class ScreenMapper:
-    def __init__(self, cdp: RawCDPClient):
-        self.cdp = cdp
-        self.scale_x = 1.0
-        self.scale_y = 1.0
-        self.origin_x = 0.0
-        self.origin_y = 100.0
-
-    async def calibrate(self):
-        bring_chrome_to_front()
-        await asyncio.sleep(0.3)
-        await self.cdp.get_state()
-        p1x, p1y = 500, 450
-        move_os_mouse(p1x, p1y, duration=0.25)
-        await asyncio.sleep(0.35)
-        st1 = await self.cdp.get_state()
-        m1 = st1.get("mouse") or {}
-        c1x, c1y = m1.get("clientX", 0), m1.get("clientY", 0)
-
-        p2x, p2y = 900, 650
-        move_os_mouse(p2x, p2y, duration=0.25)
-        await asyncio.sleep(0.35)
-        st2 = await self.cdp.get_state()
-        m2 = st2.get("mouse") or {}
-        c2x, c2y = m2.get("clientX", 0), m2.get("clientY", 0)
-
-        if abs(c2x - c1x) > 50 and abs(c2y - c1y) > 50:
-            self.scale_x = (p2x - p1x) / float(c2x - c1x)
-            self.scale_y = (p2y - p1y) / float(c2y - c1y)
-            self.origin_x = p1x - c1x * self.scale_x
-            self.origin_y = p1y - c1y * self.scale_y
-        else:
-            dpr = float(st2.get("dpr") or 1.0)
-            self.scale_x = dpr
-            self.scale_y = dpr
-            self.origin_x = 0.0
-            self.origin_y = 85.0 * dpr
-
-    def to_screen(self, box: dict) -> tuple[int, int]:
-        jx = box["x"] + random.uniform(-min(12, box["w"] * 0.2), min(12, box["w"] * 0.2))
-        jy = box["y"] + random.uniform(-min(6, box["h"] * 0.2), min(6, box["h"] * 0.2))
-        sx = int(self.origin_x + jx * self.scale_x)
-        sy = int(self.origin_y + jy * self.scale_y)
-        return sx, sy
-
-    def click_box(self, box: dict):
-        bring_chrome_to_front()
-        sx, sy = self.to_screen(box)
-        os_left_click(sx, sy)
 
 def get_flow_ws_url() -> str | None:
     try:
@@ -370,6 +312,18 @@ def launch_chrome() -> subprocess.Popen | None:
             break
         time.sleep(0.5)
     return proc
+
+def sanitize_cookies(raw_cookies: list[dict]) -> list[dict]:
+    cleaned = []
+    for c in raw_cookies:
+        c = dict(c)
+        if c.get("name", "").startswith("__Host-"):
+            dom = c.pop("domain", "").lstrip(".")
+            c["url"] = f"https://{dom}{c.get('path', '/')}"
+        if c.get("expires", -1) <= 0:
+            c.pop("expires", None)
+        cleaned.append(c)
+    return cleaned
 
 def parse_prompt_file(file_path: Path):
     content = file_path.read_text(encoding="utf-8")
@@ -416,121 +370,106 @@ def resolve_reference_path(base_dir: Path, video_dir: Path, ref_rel: str | None)
             return c.resolve()
     return None
 
-async def ensure_in_editor(cdp: RawCDPClient, mapper: ScreenMapper) -> bool:
+async def ensure_in_editor(cdp: RawCDPClient) -> bool:
     for _ in range(45):
         st = await cdp.get_state()
         if st.get("editor"):
             return True
         if st.get("acceptBtn"):
-            mapper.click_box(st["acceptBtn"])
+            await cdp.human_click_box(st["acceptBtn"])
             await asyncio.sleep(1.5)
             continue
         if st.get("projectHref"):
             await cdp.send_cmd("Page.navigate", {"url": st["projectHref"]})
             await asyncio.sleep(4.0)
             continue
-        if st.get("ctaBtn"):
-            mapper.click_box(st["ctaBtn"])
+        if st.get("newProjectBtn"):
+            await cdp.human_click_box(st["newProjectBtn"])
             await asyncio.sleep(3.5)
             continue
-        if st.get("newProjectBtn"):
-            mapper.click_box(st["newProjectBtn"])
+        if st.get("ctaBtn"):
+            await cdp.human_click_box(st["ctaBtn"])
             await asyncio.sleep(3.5)
+            new_ws = get_flow_ws_url()
+            if new_ws and new_ws != cdp.ws_url:
+                await cdp.close()
+                cdp.ws_url = new_ws
+                await cdp.connect()
             continue
         await asyncio.sleep(1.0)
     return False
 
-async def attach_reference_hardware(cdp: RawCDPClient, mapper: ScreenMapper, ref_path: Path):
+async def attach_reference_cdp(cdp: RawCDPClient, ref_path: Path):
     st = await cdp.get_state()
     if not st.get("addBtn"):
         return
 
-    mapper.click_box(st["addBtn"])
-    await asyncio.sleep(random.uniform(1.3, 1.8))
+    await cdp.human_click_box(st["addBtn"])
+    await asyncio.sleep(random.uniform(1.2, 1.7))
 
     st = await cdp.get_state()
     if st.get("searchInput"):
-        mapper.click_box(st["searchInput"])
-        await asyncio.sleep(0.3)
-        press_ctrl_combo(VK_A)
-        await asyncio.sleep(0.1)
-        press_vk(VK_BACK)
-        await asyncio.sleep(0.2)
-        set_clipboard_text(ref_path.stem)
-        press_ctrl_combo(VK_V)
-        await asyncio.sleep(1.6)
+        await cdp.human_click_box(st["searchInput"])
+        await asyncio.sleep(0.25)
+        await cdp.clear_and_paste(ref_path.stem)
+        await asyncio.sleep(1.5)
 
         st = await cdp.get_state()
         lib_box = st.get("libRoccoV2") or st.get("libRocco")
         if lib_box:
-            mapper.click_box(lib_box)
-            await asyncio.sleep(1.3)
+            await cdp.human_click_box(lib_box)
+            await asyncio.sleep(1.2)
             st = await cdp.get_state()
             if st.get("confirmAddBtn"):
-                mapper.click_box(st["confirmAddBtn"])
-                await asyncio.sleep(1.4)
+                await cdp.human_click_box(st["confirmAddBtn"])
+                await asyncio.sleep(1.3)
             return
 
-    st = await cdp.get_state()
-    if st.get("uploadBtn"):
-        mapper.click_box(st["uploadBtn"])
-        await asyncio.sleep(1.8)
-        set_clipboard_text(str(ref_path))
-        press_ctrl_combo(VK_V)
-        await asyncio.sleep(0.4)
-        press_vk(VK_RETURN)
-        await asyncio.sleep(3.8)
-
+    if await cdp.upload_file_to_input(ref_path):
+        await asyncio.sleep(3.0)
         for _ in range(10):
             st = await cdp.get_state()
             if st.get("acceptBtn"):
-                mapper.click_box(st["acceptBtn"])
+                await cdp.human_click_box(st["acceptBtn"])
                 await asyncio.sleep(2.0)
                 break
             await asyncio.sleep(0.5)
-
         st = await cdp.get_state()
         if st.get("confirmAddBtn"):
-            mapper.click_box(st["confirmAddBtn"])
-            await asyncio.sleep(1.5)
+            await cdp.human_click_box(st["confirmAddBtn"])
+            await asyncio.sleep(1.4)
     else:
-        press_vk(VK_ESCAPE)
+        await cdp.press_key("Escape", "Escape", 27)
         await asyncio.sleep(0.5)
 
-async def submit_prompt_hardware(cdp: RawCDPClient, mapper: ScreenMapper, prompt: str):
+async def submit_prompt_cdp(cdp: RawCDPClient, prompt: str):
     st = await cdp.get_state()
     if not st.get("editor"):
-        await ensure_in_editor(cdp, mapper)
+        await ensure_in_editor(cdp)
         st = await cdp.get_state()
 
     editor_box = st.get("editor")
     if not editor_box:
         raise RuntimeError("Prompt kutusu bulunamadi")
 
-    mapper.click_box(editor_box)
-    await asyncio.sleep(random.uniform(0.25, 0.45))
-    press_ctrl_combo(VK_A)
-    await asyncio.sleep(0.15)
-    press_vk(VK_BACK)
-    await asyncio.sleep(0.25)
-
-    set_clipboard_text(prompt)
-    press_ctrl_combo(VK_V)
-    await asyncio.sleep(random.uniform(1.1, 1.7))
+    await cdp.human_click_box(editor_box)
+    await asyncio.sleep(random.uniform(0.2, 0.4))
+    await cdp.clear_and_paste(prompt)
+    await asyncio.sleep(random.uniform(0.9, 1.5))
 
     st = await cdp.get_state()
     if st.get("genBtn"):
-        mapper.click_box(st["genBtn"])
+        await cdp.human_click_box(st["genBtn"])
     else:
-        press_vk(VK_RETURN)
+        await cdp.press_key("Enter", "Enter", 13)
 
     await asyncio.sleep(2.0)
     st = await cdp.get_state()
     if st.get("editorText"):
         if st.get("genBtn"):
-            mapper.click_box(st["genBtn"])
+            await cdp.human_click_box(st["genBtn"])
         else:
-            press_vk(VK_RETURN)
+            await cdp.press_key("Enter", "Enter", 13)
         await asyncio.sleep(1.5)
 
 async def run_batch(target_str: str):
@@ -582,20 +521,16 @@ async def run_batch(target_str: str):
         try:
             sess_data = json.loads(SESSION_PATH.read_text(encoding="utf-8"))
             if sess_data.get("cookies"):
-                await cdp.send_cmd("Network.setCookies", {"cookies": sess_data["cookies"]})
+                await cdp.send_cmd("Network.setCookies", {"cookies": sanitize_cookies(sess_data["cookies"])})
         except Exception:
             pass
 
-    await cdp.send_cmd("Page.navigate", {"url": FLOW_URL})
+    await cdp.send_cmd("Page.navigate", {"url": "https://labs.google/fx/tr/tools/flow"})
     await asyncio.sleep(4.5)
 
-    mapper = ScreenMapper(cdp)
-    await mapper.calibrate()
-
-    if not await ensure_in_editor(cdp, mapper):
+    if not await ensure_in_editor(cdp):
         raise RuntimeError("Flow proje editoru acilamadi")
 
-    await mapper.calibrate()
     failures = []
 
     for num, prompt in pending_scenes:
@@ -608,9 +543,9 @@ async def run_batch(target_str: str):
                 before_srcs = set((await cdp.get_state()).get("imageSrcs") or [])
 
                 if ref_path and ref_path.exists():
-                    await attach_reference_hardware(cdp, mapper, ref_path)
+                    await attach_reference_cdp(cdp, ref_path)
 
-                await submit_prompt_hardware(cdp, mapper, prompt)
+                await submit_prompt_cdp(cdp, prompt)
 
                 waited = 0
                 new_srcs = []
@@ -618,16 +553,15 @@ async def run_batch(target_str: str):
                     await asyncio.sleep(1.0)
                     waited += 1
 
-                    if waited % 14 == 0:
-                        rx, ry = random.randint(350, 850), random.randint(250, 550)
-                        move_os_mouse(rx, ry, duration=0.35)
+                    if waited % 12 == 0:
+                        await cdp.human_move(random.randint(300, 900), random.randint(200, 600), duration=0.3)
 
                     st = await cdp.get_state()
                     if st.get("retryBtn"):
-                        await asyncio.sleep(random.uniform(3.5, 5.5))
+                        await asyncio.sleep(random.uniform(4.0, 6.0))
                         st = await cdp.get_state()
                         if st.get("retryBtn"):
-                            mapper.click_box(st["retryBtn"])
+                            await cdp.human_click_box(st["retryBtn"])
                             waited = 0
                             await asyncio.sleep(3.0)
 
@@ -663,9 +597,9 @@ async def run_batch(target_str: str):
 
             except Exception as e:
                 print(f"[Sahne {num:02d}] Deneme {attempt} basarisiz: {e}", flush=True)
-                press_vk(VK_ESCAPE)
+                await cdp.press_key("Escape", "Escape", 27)
                 await asyncio.sleep(2.0)
-                await ensure_in_editor(cdp, mapper)
+                await ensure_in_editor(cdp)
 
         if not scene_done:
             failures.append(num)
