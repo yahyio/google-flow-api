@@ -79,16 +79,37 @@ class FlowBrowserSession:
         except Exception as e:
             self.last_error = str(e)
 
+    def _get_profile_dir(self) -> str:
+        session_file = settings.SESSION_STORAGE_PATH
+        if not os.path.isabs(session_file):
+            session_file = os.path.abspath(session_file)
+        profile_dir = os.path.join(os.path.dirname(session_file), "chrome_profile")
+        os.makedirs(profile_dir, exist_ok=True)
+        return profile_dir
+
     async def _interactive_relogin(self, session_file: str):
-        login_browser = await self.playwright.chromium.launch(headless=False)
-        storage = session_file if os.path.exists(session_file) and os.path.getsize(session_file) > 0 else None
-        login_ctx = await login_browser.new_context(
-            storage_state=storage,
+        profile_dir = self._get_profile_dir()
+        try:
+            if self.page and not self.page.is_closed():
+                await self.page.close()
+        except Exception:
+            pass
+        self.page = None
+        try:
+            if self.context:
+                await self.context.close()
+        except Exception:
+            pass
+        self.context = None
+
+        login_ctx = await self.playwright.chromium.launch_persistent_context(
+            user_data_dir=profile_dir,
+            headless=False,
             viewport={"width": 1600, "height": 1000},
             locale="tr-TR",
             timezone_id="Europe/Istanbul"
         )
-        login_page = await login_ctx.new_page()
+        login_page = login_ctx.pages[0] if login_ctx.pages else await login_ctx.new_page()
         await login_page.goto("https://accounts.google.com/ServiceLogin?continue=https://flow.google.com/", wait_until="domcontentloaded")
         for _ in range(300):
             await asyncio.sleep(1.0)
@@ -102,8 +123,11 @@ class FlowBrowserSession:
             except Exception:
                 pass
         await asyncio.sleep(3.0)
-        await login_ctx.storage_state(path=session_file)
-        await login_browser.close()
+        try:
+            await login_ctx.storage_state(path=session_file)
+        except Exception:
+            pass
+        await login_ctx.close()
 
     async def _ensure_project_editor(self):
         session_file = settings.SESSION_STORAGE_PATH
@@ -145,21 +169,14 @@ class FlowBrowserSession:
             if "accounts.google.com" in cur_url or "/about" in cur_url:
                 if sys.platform == "win32":
                     await self._interactive_relogin(session_file)
-                    try:
-                        await self.page.close()
-                    except Exception:
-                        pass
-                    try:
-                        await self.context.close()
-                    except Exception:
-                        pass
-                    self.context = await self.browser.new_context(
-                        storage_state=session_file,
+                    self.context = await self.playwright.chromium.launch_persistent_context(
+                        user_data_dir=self._get_profile_dir(),
+                        headless=settings.HEADLESS,
                         viewport={"width": 1600, "height": 1000},
                         locale="tr-TR",
                         timezone_id="Europe/Istanbul"
                     )
-                    self.page = await self.context.new_page()
+                    self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
                     await self.page.goto("https://flow.google.com/", wait_until="domcontentloaded", timeout=30000)
                     await asyncio.sleep(3)
                 else:
@@ -190,8 +207,19 @@ class FlowBrowserSession:
             try:
                 self.playwright = await async_playwright().start()
 
+                session_file = settings.SESSION_STORAGE_PATH
+                if not os.path.isabs(session_file):
+                    session_file = os.path.abspath(session_file)
+
                 if sys.platform == "win32":
-                    launch_args = []
+                    self.context = await self.playwright.chromium.launch_persistent_context(
+                        user_data_dir=self._get_profile_dir(),
+                        headless=settings.HEADLESS,
+                        viewport={"width": 1600, "height": 1000},
+                        locale="tr-TR",
+                        timezone_id="Europe/Istanbul"
+                    )
+                    self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
                 else:
                     launch_args = [
                         "--disable-blink-features=AutomationControlled",
@@ -218,46 +246,35 @@ class FlowBrowserSession:
                         "--js-flags=--max-old-space-size=160"
                     ]
 
-                session_file = settings.SESSION_STORAGE_PATH
-                if not os.path.isabs(session_file):
-                    session_file = os.path.abspath(session_file)
+                    if not os.path.exists(session_file) or os.path.getsize(session_file) == 0:
+                        session_base64 = os.getenv("SESSION_BASE64")
+                        session_raw = os.getenv("SESSION_JSON")
+                        if session_base64:
+                            os.makedirs(os.path.dirname(session_file), exist_ok=True)
+                            with open(session_file, "wb") as f:
+                                f.write(base64.b64decode(session_base64.strip()))
+                        elif session_raw:
+                            session_raw = session_raw.strip()
+                            if (session_raw.startswith("'") and session_raw.endswith("'")) or (session_raw.startswith('"') and session_raw.endswith('"')):
+                                session_raw = session_raw[1:-1].strip()
+                            os.makedirs(os.path.dirname(session_file), exist_ok=True)
+                            with open(session_file, "w", encoding="utf-8") as f:
+                                f.write(session_raw)
 
-                if not os.path.exists(session_file) or os.path.getsize(session_file) == 0:
-                    session_base64 = os.getenv("SESSION_BASE64")
-                    session_raw = os.getenv("SESSION_JSON")
-                    if session_base64:
-                        os.makedirs(os.path.dirname(session_file), exist_ok=True)
-                        with open(session_file, "wb") as f:
-                            f.write(base64.b64decode(session_base64.strip()))
-                    elif session_raw:
-                        session_raw = session_raw.strip()
-                        if (session_raw.startswith("'") and session_raw.endswith("'")) or (session_raw.startswith('"') and session_raw.endswith('"')):
-                            session_raw = session_raw[1:-1].strip()
-                        os.makedirs(os.path.dirname(session_file), exist_ok=True)
-                        with open(session_file, "w", encoding="utf-8") as f:
-                            f.write(session_raw)
+                    if not os.path.exists(session_file) or os.path.getsize(session_file) == 0:
+                        raise RuntimeError("Oturum dosyasi bulunamadi. Render Environment ayarlarina SESSION_JSON veya SESSION_BASE64 ekleyin.")
 
-                if not os.path.exists(session_file) or os.path.getsize(session_file) == 0:
-                    raise RuntimeError("Oturum dosyasi bulunamadi. Render Environment ayarlarina SESSION_JSON veya SESSION_BASE64 ekleyin.")
-
-                try:
-                    with open(session_file, "r", encoding="utf-8") as f:
-                        json.load(f)
-                except Exception as e:
-                    raise RuntimeError(f"Oturum dosyasi gecerli bir JSON formati degil: {e}")
-
-                self.browser = await self.playwright.chromium.launch(
-                    headless=settings.HEADLESS,
-                    args=launch_args
-                )
-                self.context = await self.browser.new_context(
-                    storage_state=session_file,
-                    viewport={"width": 1600, "height": 1000},
-                    locale="tr-TR",
-                    timezone_id="Europe/Istanbul"
-                )
-
-                self.page = await self.context.new_page()
+                    self.browser = await self.playwright.chromium.launch(
+                        headless=settings.HEADLESS,
+                        args=launch_args
+                    )
+                    self.context = await self.browser.new_context(
+                        storage_state=session_file,
+                        viewport={"width": 1600, "height": 1000},
+                        locale="tr-TR",
+                        timezone_id="Europe/Istanbul"
+                    )
+                    self.page = await self.context.new_page()
 
                 await self.page.goto("https://flow.google.com/", wait_until="domcontentloaded", timeout=30000)
                 await asyncio.sleep(3)

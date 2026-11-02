@@ -10,49 +10,45 @@ if sys.platform == "win32":
 
 async def main():
     base_dir = Path(__file__).resolve().parent
+    profile_dir = base_dir / "auth" / "chrome_profile"
     session_file = base_dir / "auth" / "session.json"
-    session_file.parent.mkdir(parents=True, exist_ok=True)
-
-    storage = str(session_file) if session_file.exists() and session_file.stat().st_size > 0 else None
+    profile_dir.mkdir(parents=True, exist_ok=True)
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context(
-            storage_state=storage,
+        context = await p.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir),
+            headless=False,
             viewport={"width": 1600, "height": 1000},
             locale="tr-TR",
             timezone_id="Europe/Istanbul"
         )
-        page = await context.new_page()
+        page = context.pages[0] if context.pages else await context.new_page()
 
-        await page.goto("https://flow.google.com/", wait_until="domcontentloaded")
-        print("Lutfen acilan pencerede Google hesabiniza giris yapin.")
-        print("Flow proje ekrani acildiginda oturum otomatik olarak kaydedilecektir...")
+        await page.goto("https://accounts.google.com/ServiceLogin?continue=https://flow.google.com/", wait_until="domcontentloaded")
+        print("Lutfen acilan kalici profil penceresinde Google hesabiniza giris yapin.")
+        print("Bu profil diske (auth/chrome_profile) kaydedilecegi icin bir daha cikis yapmaz.")
 
-        logged_in = False
         for _ in range(300):
             await asyncio.sleep(1.0)
             try:
                 cur_url = page.url
-                if "accounts.google.com" in cur_url:
+                if "accounts.google.com" in cur_url or "/about" in cur_url:
                     continue
                 target = await page.query_selector(
                     'div.ProseMirror, a[href*="/project/"], button:has-text("Yeni proje"), button:has-text("New project")'
                 )
                 if target:
-                    logged_in = True
                     break
             except Exception:
                 pass
 
-        if not logged_in:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, input, "Giris yaptiktan sonra ENTER tusuna basin: ")
-
         await asyncio.sleep(3.0)
-        await context.storage_state(path=str(session_file))
-        print("Giris basarili! Oturum kaydedildi:", session_file.resolve())
-        await browser.close()
+        try:
+            await context.storage_state(path=str(session_file))
+        except Exception:
+            pass
+        print("Kalici profil kaydedildi:", profile_dir.resolve())
+        await context.close()
 
 
 if __name__ == "__main__":
