@@ -201,26 +201,17 @@ class FlowBrowserSession:
                 self.browser = await self.playwright.chromium.launch(
                     executable_path=exec_path,
                     headless=settings.HEADLESS,
-                    args=launch_args,
-                    ignore_default_args=["--enable-automation"]
+                    args=launch_args
                 )
                 self.context = await self.browser.new_context(
                     storage_state=session_file,
                     viewport={"width": 1280, "height": 720} if settings.HEADLESS else None,
                     no_viewport=not settings.HEADLESS,
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
                     locale="tr-TR",
                     timezone_id="Europe/Istanbul"
                 )
 
                 self.page = await self.context.new_page()
-
-                await self.page.add_init_script("""
-                    delete Object.getPrototypeOf(navigator).webdriver;
-                    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                    window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {}, app: {} };
-                    Object.defineProperty(navigator, 'languages', { get: () => ['tr-TR', 'tr', 'en-US', 'en'] });
-                """)
 
                 await self.page.goto("https://flow.google.com/", wait_until="domcontentloaded", timeout=30000)
                 await asyncio.sleep(2)
